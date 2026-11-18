@@ -1,3 +1,10 @@
+# Membangun dan menerbitkan JonBet ke GitHub Pages, lalu menyegarkan jadwal tiap ±5 menit (batas tercepat GitHub).
+# Menit 3, 8, 13, ... dipilih supaya tidak berebut dengan lonjakan beban GitHub di menit 0 dan 30. Skor live ditambah
+# langsung dari browser (lihat docs/DEPLOY.md), karena jadwal Actions bisa tertunda belasan menit.
+#
+# Pengaturan satu kali: di repo, Settings > Pages > Build and deployment > Source = "GitHub Actions".
+# Sumber data: auto (bawaan) = ESPN utama + TheSportsDB pelengkap. Opsional: secret THESPORTSDB_KEY (kunci premium TheSportsDB),
+# variabel repo JONBET_PROVIDER = auto | espn | thesportsdb | demo (demo = data simulasi). Lihat docs/DEPLOY.md.
 name: Pages
 
 on:
@@ -12,6 +19,7 @@ permissions:
   pages: write
   id-token: write
 
+# Satu penerbitan pada satu waktu; yang menunggu diganti yang terbaru, yang sedang jalan tidak dibatalkan.
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -27,6 +35,8 @@ jobs:
         with:
           node-version: 22
 
+      # State = database rating Elo, cache permintaan, dan data terakhir yang berhasil.
+      # Dipulihkan dari build sebelumnya agar model terus belajar dan permintaan ke sumber data hemat.
       - name: Pulihkan state dari build sebelumnya
         uses: actions/cache/restore@v4
         with:
@@ -63,3 +73,4 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+

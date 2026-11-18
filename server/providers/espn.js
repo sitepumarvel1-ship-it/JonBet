@@ -14,7 +14,12 @@ const DAY = 86_400_000;
 const ID_RE = /^[A-Za-z0-9_-]{1,48}$/;
 
 const ymd = (ms) => new Date(ms).toISOString().slice(0, 10).replace(/-/g, '');
-export const rangeUrl = (ep, from, to) => `${scoreboardUrl(ep)}?dates=${ymd(from) === ymd(to) ? ymd(from) : `${ymd(from)}-${ymd(to)}`}&limit=1000`;
+// Tiga cara bertanya, dari yang paling hemat permintaan: rentang tanggal + limit, rentang tanpa limit, lalu satu hari per permintaan.
+// ESPN tidak punya dokumentasi resmi; build nyata di GitHub menunjukkan HTTP 400 untuk bentuk pertama pada liga sepak bola,
+// jadi penyedia ini beralih sendiri ke bentuk berikutnya (lihat boardRows).
+export const MODES = ['range', 'range-nolimit', 'days'];
+export const rangeUrl = (ep, from, to, mode = 'range') => `${scoreboardUrl(ep)}?dates=${ymd(from) === ymd(to) ? ymd(from) : `${ymd(from)}-${ymd(to)}`}${mode === 'range' ? '&limit=1000' : ''}`;
+const USER_AGENT = 'JonBet/1.0 (aplikasi prediksi olahraga nirlaba; pembaca papan skor publik)';
 
 const shortOf = (team) => {
   const abbr = String(team.abbr || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -89,11 +94,11 @@ export function createEspnProvider({ fetchImpl = globalThis.fetch, now = () => D
   const seen = new Map(); // id -> pertandingan terakhir yang dilihat
   let report = null;
 
-  async function fetchBoard(ep, from, to) {
+  async function fetchBoard(ep, from, to, mode = 'range') {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), timeoutMs);
     try {
-      const res = await fetchImpl(rangeUrl(ep, from, to), { signal: ctl.signal, headers: { accept: 'application/json' } });
+      const res = await fetchImpl(rangeUrl(ep, from, to, mode), { signal: ctl.signal, headers: { accept: 'application/json', 'user-agent': USER_AGENT } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.json();
     } finally {
@@ -101,21 +106,50 @@ export function createEspnProvider({ fetchImpl = globalThis.fetch, now = () => D
     }
   }
 
-  // Rentang tanggal pada papan skor ESPN terdokumentasi di pihak ketiga, tetapi ada sumber lain yang menyebut hanya satu hari
-  // yang dilayani. Bila rentang >= 3 hari hanya mengembalikan laga di satu tanggal, anggap rentang diabaikan dan ambil per hari
-  // (hanya untuk rentang pendek; rentang riwayat panjang tidak dipecah supaya jumlah permintaan tetap terbatas).
-  let rangeSuspect = 0;
-  async function boardRows(ep, from, to) {
-    const rows = parseBoard(ep, await fetchBoard(ep, from, to));
-    const days = Math.round((to - from) / DAY) + 1;
-    if (days < 3 || !rows.length || new Set(rows.map((m) => m.kickoff.slice(0, 10))).size > 1) return rows;
-    rangeSuspect++;
-    if (days > 10) return rows;
-    const byId = new Map(rows.map((m) => [m.id, m]));
-    for (let t = from; t <= to; t += DAY) {
-      try { for (const m of parseBoard(ep, await fetchBoard(ep, t, t))) byId.set(m.id, m); } catch { /* satu hari hilang, sisanya tetap dipakai */ }
+  // Mode pertanyaan. Dimulai dari yang paling hemat. Satu liga yang ditolak (HTTP 400) mencoba mode berikutnya sendiri; mode global baru
+  // naik setelah 3 liga berbeda perlu naik DAN mode lama belum pernah berhasil, supaya satu slug salah tidak memaksa semua liga
+  // memakai mode boros. okIn/promoted: hitungan keberhasilan per mode.
+  let mode = 0;
+  const okIn = MODES.map(() => 0);
+  const promoted = MODES.map(() => 0);
+  const badRequest = (err) => /\bHTTP 400\b/.test(String(err?.message));
+
+  // Mode "days": satu permintaan per hari. Kegagalan hari pertama langsung dilempar (hari lain akan gagal sama), selanjutnya dilewati.
+  async function daysRows(ep, from, to) {
+    const byId = new Map();
+    let first = true;
+    for (let t = from; ymd(t) <= ymd(to); t += DAY) {
+      try {
+        for (const m of parseBoard(ep, await fetchBoard(ep, t, t, 'days'))) byId.set(m.id, m);
+      } catch (err) {
+        if (first) throw err;
+      }
+      first = false;
     }
     return [...byId.values()];
+  }
+
+  // Rentang >= 3 hari yang hanya mengembalikan laga di satu tanggal berarti rentang diabaikan: ambil per hari (rentang pendek saja;
+  // rentang riwayat panjang tidak dipecah supaya jumlah permintaan tetap terbatas).
+  let rangeSuspect = 0;
+  async function boardRows(ep, from, to) {
+    for (let m = mode; ; m++) {
+      let rows;
+      try {
+        rows = MODES[m] === 'days' ? await daysRows(ep, from, to) : parseBoard(ep, await fetchBoard(ep, from, to, MODES[m]));
+      } catch (err) {
+        if (!badRequest(err) || m >= MODES.length - 1 || okIn[m] > 0) throw err;
+        continue; // ditolak dan mode ini belum pernah berhasil untuk liga lain: coba mode berikutnya untuk liga ini
+      }
+      okIn[m]++;
+      if (m > mode && ++promoted[m] >= 3 && okIn[mode] === 0) { mode = m; log(`ESPN: bentuk permintaan sebelumnya ditolak (HTTP 400), beralih ke mode "${MODES[m]}".`); }
+      if (MODES[m] === 'days') return rows;
+      const days = Math.round((to - from) / DAY) + 1;
+      if (days < 3 || !rows.length || new Set(rows.map((x) => x.kickoff.slice(0, 10))).size > 1) return rows;
+      rangeSuspect++;
+      if (days > 10) return rows;
+      return daysRows(ep, from, to).then((extra) => { const byId = new Map(rows.map((x) => [x.id, x])); for (const x of extra) byId.set(x.id, x); return [...byId.values()]; }, () => rows);
+    }
   }
 
   function parseBoard(ep, json) {
@@ -165,7 +199,7 @@ export function createEspnProvider({ fetchImpl = globalThis.fetch, now = () => D
       }));
 
       const inWindow = [...found.values()].filter((m) => { const k = Date.parse(m.kickoff); return k >= from && k <= to; });
-      report = { at: new Date(now()).toISOString(), tried: wanted.length - queue.length, ok, failed, events: inWindow.length, aborted, rangeSuspect: rangeSuspect - suspectBefore };
+      report = { at: new Date(now()).toISOString(), tried: wanted.length - queue.length, ok, failed, events: inWindow.length, aborted, rangeSuspect: rangeSuspect - suspectBefore, mode: MODES[mode] };
       if (failed.length) log(`ESPN: ${failed.length} liga gagal (${failed.slice(0, 6).map((f) => `${f.path} ${f.error}`).join('; ')}${failed.length > 6 ? '; ...' : ''})`);
       if (ok === 0) throw new Error(`ESPN tidak merespons (${failed.length} liga gagal): ${failed[0]?.error || 'tanpa liga'}`);
       for (const m of found.values()) seen.set(m.id, m);

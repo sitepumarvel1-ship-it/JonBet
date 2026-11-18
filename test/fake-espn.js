@@ -55,17 +55,21 @@ export const LEAGUE_FIXTURES = {
  * ESPN palsu: per liga, ?dates=YYYYMMDD-YYYYMMDD memuat 4 laga per hari (03, 08, 13, 18 UTC) dengan skor deterministik.
  * Relatif terhadap `now`: yang sudah lewat 3 jam = selesai, yang sedang berjalan = live, sisanya belum mulai.
  * Liga di luar LEAGUE_FIXTURES dijawab kosong (200). failPaths -> 404; failAll -> galat jaringan.
+ * rejectLimit: 400 untuk rentang yang memakai &limit; rejectRange: 400 untuk setiap rentang A-B (satu hari tetap dilayani);
+ * badRequestPaths: 400 hanya untuk liga tertentu (slug salah).
  * singleDayOnly: meniru ESPN yang mengabaikan rentang dan hanya mengembalikan hari pertama; ?dates=YYYYMMDD (satu hari) tetap dilayani.
  */
-export function fakeEspnSite({ now = Date.now(), leagues = LEAGUE_FIXTURES, failPaths = [], failAll = false, singleDayOnly = false } = {}) {
+export function fakeEspnSite({ now = Date.now(), leagues = LEAGUE_FIXTURES, failPaths = [], failAll = false, singleDayOnly = false, rejectLimit = false, rejectRange = false, badRequestPaths = [] } = {}) {
   const log = [];
   const ymdMs = (s) => Date.UTC(+s.slice(0, 4), +s.slice(4, 6) - 1, +s.slice(6, 8));
   const impl = async (url) => {
     log.push(String(url));
     if (failAll) throw new Error('ESPN tidak bisa dihubungi');
-    const m = /\/sports\/([a-z]+\/[a-z0-9._-]+)\/scoreboard\?dates=(\d{8})(?:-(\d{8}))?&limit=\d+/.exec(String(url));
+    const m = /\/sports\/([a-z]+\/[a-z0-9._-]+)\/scoreboard\?dates=(\d{8})(?:-(\d{8}))?(&limit=\d+)?$/.exec(String(url));
     if (!m) return new Response('{}', { status: 404 });
-    const [, path, a, b0] = m;
+    const [, path, a, b0, lim] = m;
+    if (badRequestPaths.includes(path)) return new Response('{}', { status: 400 });
+    if (b0 && (rejectRange || (rejectLimit && lim))) return new Response('{}', { status: 400 });
     const b = singleDayOnly || !b0 ? a : b0;
     if (failPaths.includes(path)) return new Response('{}', { status: 404 });
     const lg = leagues[path];

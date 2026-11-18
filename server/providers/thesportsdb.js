@@ -121,7 +121,7 @@ export function createTsdbProvider({ key = '3', fetchImpl = globalThis.fetch, no
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), timeoutMs);
     try {
-      const res = await fetchImpl(url, { signal: ctl.signal, headers: { accept: 'application/json', ...headers } });
+      const res = await fetchImpl(url, { signal: ctl.signal, headers: { accept: 'application/json', 'user-agent': 'JonBet/1.0 (aplikasi prediksi olahraga nirlaba)', ...headers } });
       if (!res.ok) throw new Error(`TheSportsDB membalas HTTP ${res.status}`);
       const data = await res.json();
       cache.set(url, { at: t, data });

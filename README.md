@@ -17,7 +17,7 @@ Butuh Node.js 22.13 atau lebih baru. Tanpa dependensi npm.
 npm run preview:pages  # versi GitHub Pages, data simulasi: http://localhost:8080/jonbet/
 npm run demo           # versi server, data simulasi: http://localhost:3000
 npm start              # versi server, data nyata dari ESPN + TheSportsDB (lihat "Sumber data")
-npm test               # 146 tes: backend, model, keamanan, build Pages, sumber data ESPN, skor langsung, fuzz
+npm test               # 150 tes: backend, model, keamanan, build Pages, sumber data ESPN, skor langsung, fuzz
 npm run check          # periksa sintaks semua berkas JS
 npm run test:ui        # uji browser versi server; butuh Google Chrome dan: npm i --no-save playwright-core
 npm run test:ui:static # uji browser versi GitHub Pages di subfolder /jonbet/

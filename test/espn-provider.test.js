@@ -114,7 +114,7 @@ test('provider ESPN: rentang tanggal diabaikan oleh ESPN -> terdeteksi dan diamb
   const rows = await p.listMatches({ ...WINDOW, sports: null });
   assert.equal(p.report.rangeSuspect, 1, 'terdeteksi satu liga yang mengabaikan rentang');
   assert.equal(site.log.length, 1 + 10, 'satu permintaan rentang + satu per hari (10 hari dengan margin)');
-  assert.ok(site.log.slice(1).every((u) => /dates=\d{8}&limit=1000$/.test(u)), 'permintaan per hari memakai satu tanggal');
+  assert.ok(site.log.slice(1).every((u) => /dates=\d{8}$/.test(u)), 'permintaan per hari memakai satu tanggal');
   const days = new Set(rows.map((m) => m.kickoff.slice(0, 10)));
   assert.ok(days.size >= 6, `laga tersebar di beberapa hari: ${days.size}`);
   assert.equal(new Set(rows.map((m) => m.id)).size, rows.length);
@@ -133,6 +133,42 @@ test('provider ESPN: rentang normal tidak memicu cadangan per hari; rentang riwa
   await q.listMatches({ from: T0 - 15 * DAY, to: T0, sports: null });
   assert.equal(q.report.rangeSuspect, 1);
   assert.equal(bad.log.length, 1, 'rentang 17 hari: tidak dipecah (batas jumlah permintaan)');
+});
+
+test('provider ESPN: HTTP 400 pada rentang+limit -> beralih sendiri ke rentang tanpa limit (hemat permintaan)', async () => {
+  const site = fakeEspnSite({ now: T0, rejectLimit: true });
+  const logs = [];
+  const p = createEspnProvider({ fetchImpl: site.impl, now: () => T0, log: (m) => logs.push(m) });
+  const rows = await p.listMatches({ ...WINDOW, sports: null });
+  assert.equal(p.report.mode, 'range-nolimit');
+  assert.equal(p.report.failed.length, 0, 'semua liga akhirnya berhasil');
+  assert.ok(rows.length >= 6 * 4 * 6, `laga lengkap: ${rows.length}`);
+  assert.ok(site.log.some((u) => /dates=\d{8}-\d{8}$/.test(u)), 'memakai rentang tanpa limit');
+  assert.ok(!site.log.some((u) => /dates=\d{8}&/.test(u)), 'tidak jatuh ke per hari');
+  assert.ok(logs.some((m) => /beralih ke mode "range-nolimit"/.test(m)));
+});
+
+test('provider ESPN: semua rentang ditolak -> mode per hari, laga tetap lengkap dan tanpa duplikat', async () => {
+  const site = fakeEspnSite({ now: T0, rejectRange: true });
+  const p = createEspnProvider({ fetchImpl: site.impl, now: () => T0, concurrency: 1 });
+  const rows = await p.listMatches({ ...WINDOW, sports: null });
+  assert.equal(p.report.mode, 'days');
+  assert.equal(p.report.failed.length, 0);
+  assert.ok(rows.length >= 6 * 4 * 6 && rows.length <= 6 * 4 * 8, `jumlah laga: ${rows.length}`);
+  assert.equal(new Set(rows.map((m) => m.id)).size, rows.length);
+  assert.ok(site.log.filter((u) => /dates=\d{8}$/.test(u)).length >= ENDPOINTS.length * 8, 'satu permintaan per hari per liga');
+  // setelah mode global naik, liga berikutnya tidak lagi mencoba rentang: jumlah permintaan rentang terbatas
+  assert.ok(site.log.filter((u) => /dates=\d{8}-\d{8}/.test(u)).length <= 3 * 2 + 2, `permintaan rentang yang sia-sia: ${site.log.filter((u) => /dates=\d{8}-\d{8}/.test(u)).length}`);
+});
+
+test('provider ESPN: satu liga 400 (slug salah) tidak memaksa semua liga ke mode boros', async () => {
+  const bad = ENDPOINTS[0].path;
+  const site = fakeEspnSite({ now: T0, badRequestPaths: [bad] });
+  const p = createEspnProvider({ fetchImpl: site.impl, now: () => T0, concurrency: 1 });
+  await p.listMatches({ ...WINDOW, sports: null });
+  assert.equal(p.report.mode, 'range', 'mode global tetap rentang');
+  assert.deepEqual(p.report.failed.map((f) => f.path), [bad]);
+  assert.ok(!site.log.slice(3).some((u) => /dates=\d{8}$/.test(u)), 'liga lain tidak diminta per hari');
 });
 
 test('provider ESPN: filter cabang hanya memanggil liga cabang itu', async () => {
@@ -328,9 +364,29 @@ test('build auto: ESPN utama + TheSportsDB pelengkap; liga dan tim nyata, riwaya
   const games1 = b.ratings.home.games;
   const r2 = await buildPages(buildOpts(tmp('auto2'), state, { fetchImpl: routeFetch(espn, tsdb), now: () => T0 + 600_000 }));
   assert.equal(r2.outcome, 'fresh');
-  assert.equal(espn.log.length - calls1, ENDPOINTS.length, 'build berikutnya: satu permintaan per liga');
+  // liga tanpa laga (balasan kosong, 36 dari 42) di-cache beberapa jam: hanya liga yang berisi yang ditanya lagi
+  assert.equal(espn.log.length - calls1, Object.keys(LEAGUE_FIXTURES).length, 'build berikutnya: hanya liga yang punya laga');
   const b2 = readJ(r2.outDir, 'data', matchFile(up.id));
   assert.equal(b2.ratings.home.games, games1);
+});
+
+test('build auto: ESPN menolak rentang tanggal (HTTP 400 seperti di GitHub) -> tetap data nyata lewat mode per hari, tercatat di meta.json', async () => {
+  const state = tmp('b400s');
+  const espn = fakeEspnSite({ now: T0, rejectRange: true });
+  const r = await buildPages(buildOpts(tmp('b400'), state, { fetchImpl: routeFetch(espn, fakeTsdb({ now: T0 })) }));
+  assert.equal(r.outcome, 'fresh');
+  const meta = readJ(r.outDir, 'data/meta.json');
+  assert.equal(meta.demo, false);
+  assert.equal(meta.sources.espn.mode, 'days');
+  assert.ok(meta.sources.espn.ok >= 6 && meta.sources.espn.events > 100, `ESPN ok=${meta.sources.espn.ok} laga=${meta.sources.espn.events}`);
+  const up = readJ(r.outDir, 'data/matches.json').matches.find((m) => m.source === 'espn');
+  assert.ok(up, 'ada laga dari ESPN');
+  assert.ok(readJ(r.outDir, 'data/record.json'), 'rekam jejak ada');
+  // build kedua: hari lampau/jauh dan balasan kosong dipakai dari cache disk, bukan ditanya ulang
+  const before = espn.log.length;
+  await buildPages(buildOpts(tmp('b400b'), state, { fetchImpl: routeFetch(espn, fakeTsdb({ now: T0 })), now: () => T0 + 600_000 }));
+  const second = espn.log.length - before;
+  assert.ok(second < before / 2, `build kedua jauh lebih hemat: ${second} vs ${before}`);
 });
 
 test('build auto: ESPN mati -> TheSportsDB saja, tetap segar; sebagian liga gagal -> sisanya tetap', async () => {
@@ -360,6 +416,11 @@ test('build auto: kedua sumber mati -> data lama ditandai tertunda; tanpa data l
   assert.equal(readJ(r1.outDir, 'data/config.json').demo, true);
   assert.equal(readJ(r1.outDir, 'data/config.json').fallbackActive, true);
   assert.ok(!fs.existsSync(path.join(state, 'last-data')), 'data demo tidak disimpan sebagai data terakhir');
+  // meta.json harus memuat alasan asli kegagalan (bukan hanya pesan umum), supaya bisa didiagnosis tanpa membuka log build
+  const why = readJ(r1.outDir, 'data/meta.json').lastError;
+  assert.match(why, /ESPN tidak bisa dihubungi/, `alasan ESPN tercatat: ${why}`);
+  assert.match(why, /thesportsdb/i, `alasan TheSportsDB tercatat: ${why}`);
+  assert.ok(why.length <= 500);
 
   const good = await buildPages(buildOpts(tmp('b3b'), state, { fetchImpl: routeFetch(fakeEspnSite({ now: T0 }), fakeTsdb({ now: T0 })), now: () => T0 + 600_000 }));
   assert.equal(good.outcome, 'fresh');

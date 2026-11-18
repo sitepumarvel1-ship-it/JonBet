@@ -41,17 +41,33 @@ const round5 = (_k, v) => (typeof v === 'number' && !Number.isInteger(v) ? Math.
 
 /* ------------------------------------------------------------------ fetch hemat */
 
+const isEmptyBoard = (body) => { try { const j = JSON.parse(body); return Array.isArray(j?.events) && j.events.length === 0; } catch { return false; } };
+
+// Umur cache balasan ESPN per hari (hanya permintaan satu hari; rentang tidak di-cache). Hari ini dan kemarin/besok selalu segar;
+// hasil 2-4 hari lalu sudah final; jadwal 2+ hari ke depan jarang berubah. Hari yang lebih tua (riwayat rating) tidak disimpan: terlalu besar.
+export const espnTtlRule = (url, nowMs) => {
+  const m = /\/scoreboard\?dates=(\d{8})$/.exec(url);
+  if (!m) return 0;
+  const day = Date.UTC(+m[1].slice(0, 4), +m[1].slice(4, 6) - 1, +m[1].slice(6, 8));
+  const today = Date.parse(`${new Date(nowMs).toISOString().slice(0, 10)}T00:00:00Z`);
+  const d = Math.round((day - today) / DAY);
+  if (d >= -4 && d <= -2) return 12 * HOUR;
+  if (d >= 2 && d <= 9) return HOUR;
+  return 0;
+};
+
 /**
  * Pembungkus fetch untuk TheSportsDB: cache di disk (berkas kunci eventsday dipakai ulang antar build sesuai umur
  * tanggalnya), jeda antar permintaan nyata (kunci gratis dibatasi ±30 permintaan/menit), dan coba ulang singkat.
  */
-export function makeFetch({ fetchImpl = globalThis.fetch, cacheFile = null, now = () => Date.now(), gapMs = 2200, retries = 2, retryDelayMs = 4000, sleep = sleepMs, stats = {} } = {}) {
+export function makeFetch({ fetchImpl = globalThis.fetch, cacheFile = null, now = () => Date.now(), gapMs = 2200, retries = 2, retryDelayMs = 4000, sleep = sleepMs, stats = {}, ttlRule = null, emptyTtl = 0 } = {}) {
   const cache = cacheFile ? readJson(cacheFile, {}) : {};
   let lastStart = 0;
   let queue = Promise.resolve();
   stats.network = 0; stats.cached = 0; stats.failed = 0; stats.ok = 0; stats.fallback = 0;
 
   const ttlOf = (url) => {
+    if (ttlRule) return ttlRule(url, now());
     const m = /eventsday\.php\?d=(\d{4}-\d{2}-\d{2})/.exec(url);
     if (!m) return 0; // livescore, lookupevent: tidak di-cache
     const dayDiff = Math.round((Date.parse(`${m[1]}T00:00:00Z`) - Date.parse(`${new Date(now()).toISOString().slice(0, 10)}T00:00:00Z`)) / DAY);
@@ -76,7 +92,9 @@ export function makeFetch({ fetchImpl = globalThis.fetch, cacheFile = null, now 
   const fn = async (url, init) => {
     const ttl = ttlOf(url);
     const hit = cache[url];
-    if (ttl && hit && now() - hit.at < ttl) { stats.cached++; return new Response(hit.body, { status: 200, headers: { 'content-type': 'application/json' } }); }
+    // Balasan kosong (liga sedang libur) boleh dipakai lebih lama daripada balasan berisi: emptyTtl.
+    const limit = hit?.e ? Math.max(ttl, emptyTtl) : ttl;
+    if (limit && hit && now() - hit.at < limit) { stats.cached++; return new Response(hit.body, { status: 200, headers: { 'content-type': 'application/json' } }); }
 
     let lastErr = null;
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -88,7 +106,10 @@ export function makeFetch({ fetchImpl = globalThis.fetch, cacheFile = null, now 
         if (res.status === 429 || res.status >= 500) { lastErr = new Error(`HTTP ${res.status}`); continue; }
         const body = await res.text();
         if (res.ok) stats.ok++;
-        if (res.ok && ttl) cache[url] = { at: now(), body };
+        if (res.ok && (ttl || emptyTtl)) {
+          const e = emptyTtl ? isEmptyBoard(body) : false;
+          if (ttl || e) cache[url] = { at: now(), body, ...(e ? { e: 1 } : {}) };
+        }
         return new Response(body, { status: res.status, headers: { 'content-type': 'application/json' } });
       } catch (err) {
         lastErr = err;
@@ -181,7 +202,7 @@ function writeData(dataDir, t, snap, { provider, stale = false, lastError = null
 function markStale(dataDir, lastError, t) {
   const metaFile = path.join(dataDir, 'meta.json');
   const meta = readJson(metaFile);
-  writeJson(metaFile, { ...meta, stale: true, staleSince: meta.staleSince || meta.builtAt, lastError: String(lastError).slice(0, 200), checkedAt: new Date(t).toISOString() });
+  writeJson(metaFile, { ...meta, stale: true, staleSince: meta.staleSince || meta.builtAt, lastError: String(lastError).slice(0, 500), checkedAt: new Date(t).toISOString() });
   const mf = path.join(dataDir, 'matches.json');
   const m = readJson(mf);
   if (m) writeJson(mf, { ...m, meta: { ...m.meta, stale: true } });
@@ -284,11 +305,12 @@ export async function buildPages({
   const espnStats = {};
   const tsdbFetch = makeFetch({ fetchImpl, cacheFile: path.join(stateDir, 'http-cache.json'), now, gapMs: gapMs ?? (FREE_KEYS.has(String(key)) ? 2200 : 0), retryDelayMs, sleep, stats: tsdbStats });
   // ESPN tidak dibatasi seketat kunci gratis TheSportsDB: jeda pendek, coba ulang sekali, tanpa cache disk (respons besar dan cepat basi).
-  const espnFetch = makeFetch({ fetchImpl, cacheFile: null, now, gapMs: espnGapMs ?? gapMs ?? 120, retries: 1, retryDelayMs: retryDelayMs ?? 1500, sleep, stats: espnStats });
+  const espnFetch = makeFetch({ fetchImpl, cacheFile: path.join(stateDir, 'espn-cache.json'), now, gapMs: espnGapMs ?? gapMs ?? 120, retries: 1, retryDelayMs: retryDelayMs ?? 1500, sleep, stats: espnStats, ttlRule: espnTtlRule, emptyTtl: 2 * HOUR });
   const tsdb = createTsdbProvider({ key, fetchImpl: tsdbFetch, now, perMinute: 1e9, timeoutMs: 20_000 });
   const espn = createEspnProvider({ fetchImpl: espnFetch, now, timeoutMs: 20_000, log: (...a) => log('[espn]', ...a) });
   const primary = provider === 'thesportsdb' ? tsdb : provider === 'espn' ? espn : createCompositeProvider({ primary: espn, secondary: tsdb, log: (...a) => log('[sumber]', ...a) });
-  const app = createApp({ dbPath: path.join(stateDir, 'jonbet.db'), provider, fallbackDemo: false, primaryProvider: primary, now, log: (...a) => log('[sumber]', ...a) });
+  let upstream = null; // alasan asli kegagalan sumber (pesan HTTP 502 ke pengguna sengaja umum)
+  const app = createApp({ dbPath: path.join(stateDir, 'jonbet.db'), provider, fallbackDemo: false, primaryProvider: primary, now, log: (...a) => { if (a[0] === 'sumber data gagal:') upstream = String(a[1]); log('[sumber]', ...a); } });
   const used = provider === 'thesportsdb' ? [tsdbStats] : provider === 'espn' ? [espnStats] : [tsdbStats, espnStats];
   const sum = (k) => used.reduce((n, x) => n + (x[k] || 0), 0);
 
@@ -328,7 +350,7 @@ export async function buildPages({
     const rep = espn.report;
     const sources = {
       mode: provider,
-      ...(provider !== 'thesportsdb' ? { espn: rep ? { leagues: rep.tried, ok: rep.ok, events: rep.events, failed: rep.failed.slice(0, 20).map((f) => f.path), rangeSuspect: rep.rangeSuspect } : null } : {}),
+      ...(provider !== 'thesportsdb' ? { espn: rep ? { leagues: rep.tried, ok: rep.ok, events: rep.events, failed: rep.failed.slice(0, 20).map((f) => f.path), rangeSuspect: rep.rangeSuspect, mode: rep.mode } : null } : {}),
       ...(provider !== 'espn' ? { thesportsdb: { requests: tsdbStats.network, cached: tsdbStats.cached, failed: tsdbStats.failed } } : {}),
     };
     writeData(dataDir, t, snap, { provider, sources });
@@ -337,6 +359,7 @@ export async function buildPages({
     const bySource = snap.matches.reduce((o, m) => { o[m.source] = (o[m.source] || 0) + 1; return o; }, {});
     log(`Data nyata: ${snap.matches.length} pertandingan (${Object.entries(bySource).map(([k, v]) => `${k} ${v}`).join(', ')}), ${snap.health.results} hasil di riwayat.`);
     if (rep) log(`ESPN: ${rep.ok} dari ${rep.tried} liga merespons${rep.failed.length ? `; gagal: ${rep.failed.slice(0, 8).map((f) => f.path).join(', ')}${rep.failed.length > 8 ? ', ...' : ''}` : ''}.`);
+    if (rep?.mode && rep.mode !== 'range') log(`ESPN: memakai mode permintaan "${rep.mode}" (bentuk rentang tanggal ditolak ESPN).`);
     if (rep?.rangeSuspect) log(`ESPN: ${rep.rangeSuspect} liga tampaknya mengabaikan rentang tanggal (hanya satu hari yang kembali); diambil per hari.`);
     log(`Permintaan: ${sum('network')} jaringan, ${sum('cached')} dari cache, ${sum('failed')} gagal (${sum('fallback')} dipulihkan dari cache lama).`);
   } catch (err) {
@@ -348,7 +371,11 @@ export async function buildPages({
   }
   if (!error) return { outDir, outcome: 'fresh', matches: fs.readdirSync(path.join(dataDir, 'm')).length, version };
 
-  const msg = String(error?.message || error);
+  let msg = String(error?.message || error);
+  if (upstream && !msg.includes(upstream)) msg = `${msg} [${upstream}]`;
+  const espnFail = espn.report?.failed?.length ? ` ESPN gagal ${espn.report.failed.length}/${espn.report.tried}: ${espn.report.failed.slice(0, 3).map((f) => `${f.path} ${f.error}`).join('; ')}` : '';
+  if (espnFail && !msg.includes('ESPN')) msg += espnFail;
+  if (!FREE_KEYS.has(String(key))) msg = msg.split(String(key)).join('***'); // kunci premium tidak boleh ikut terbit di meta.json
   log(`Gagal mengambil data baru: ${msg}`);
   if (fs.existsSync(path.join(lastDir, 'meta.json'))) {
     fs.rmSync(dataDir, { recursive: true, force: true });
@@ -361,7 +388,7 @@ export async function buildPages({
   const demoApp = createApp({ dbPath: ':memory:', provider: 'demo', now, log: () => {} });
   try {
     const snap = await collect(demoApp, t, { maxBundles });
-    writeData(dataDir, t, snap, { provider, fallbackActive: true, lastError: msg.slice(0, 200) });
+    writeData(dataDir, t, snap, { provider, fallbackActive: true, lastError: msg.slice(0, 500) });
   } finally { await demoApp.close(); }
   log('Belum ada data lama: memakai data simulasi (ditandai jelas di aplikasi).');
   return { outDir, outcome: 'demo', matches: fs.readdirSync(path.join(dataDir, 'm')).length, version, error: msg };

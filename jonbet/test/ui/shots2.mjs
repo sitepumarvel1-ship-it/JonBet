@@ -1,0 +1,20 @@
+import { startServer, launch, watch } from './helpers.mjs';
+const out = '/home/claude/shots';
+const srv = await startServer();
+const browser = await launch();
+const issues = [];
+// Desktop
+const dctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, locale: 'id-ID', timezoneId: 'Asia/Jakarta' });
+const d = await dctx.newPage(); issues.push(...watch(d));
+await d.goto(srv.base + '/'); await d.waitForSelector('.live-strip, .empty'); await d.waitForTimeout(800);
+await d.screenshot({ path: `${out}/d-home.png` });
+await d.goto(srv.base + '/#/matches?status=upcoming'); await d.waitForSelector('.league'); await d.screenshot({ path: `${out}/d-matches.png` });
+await d.goto(srv.base + '/#/matches?status=upcoming&sport=football');
+await d.waitForSelector('a.row'); await d.click('a.row'); await d.waitForSelector('.hero'); await d.waitForTimeout(400);
+await d.screenshot({ path: `${out}/d-match.png`, fullPage: true });
+await d.click('#tab-ai'); await d.waitForSelector('.chat-form');
+await d.fill('.chat-form input', 'Apa risikonya?'); await d.click('.chat-form button'); await d.waitForSelector('.bubble.ai:nth-of-type(3)', { timeout: 5000 }).catch(()=>{});
+await d.waitForTimeout(600); await d.screenshot({ path: `${out}/d-ai.png` });
+await d.goto(srv.base + '/#/about'); await d.waitForSelector('.about'); await d.screenshot({ path: `${out}/d-about.png` });
+console.log(issues.join('\n') || 'tidak ada isu konsol');
+await browser.close(); await srv.close();

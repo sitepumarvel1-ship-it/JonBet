@@ -1,0 +1,20 @@
+{
+  "name": "jonbet",
+  "version": "1.0.0",
+  "private": true,
+  "description": "JonBet: analisis dan prediksi pertandingan semua cabang olahraga (PWA untuk iPhone dan Android)",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server/index.js",
+    "demo": "node --disable-warning=ExperimentalWarning scripts/demo.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/*.test.js\"",
+    "check": "node scripts/check-syntax.mjs",
+    "test:ui": "node test/ui/run.mjs",
+    "test:ui:static": "node --disable-warning=ExperimentalWarning test/ui/static.mjs",
+    "build:pages": "node --disable-warning=ExperimentalWarning scripts/build-pages.mjs",
+    "preview:pages": "node --disable-warning=ExperimentalWarning scripts/preview-pages.mjs"
+  }
+}

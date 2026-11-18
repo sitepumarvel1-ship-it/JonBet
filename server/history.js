@@ -16,6 +16,10 @@ export function createHistory(db, { now: clock = () => Date.now() } = {}) {
       ON CONFLICT (sport, team_key) DO UPDATE SET name = excluded.name, rating = excluded.rating,
         games = excluded.games, gf = excluded.gf, ga = excluded.ga`),
     hasResult: db.prepare('SELECT 1 FROM results WHERE match_id = ?'),
+    // Laga yang sama bisa datang dari dua sumber dengan id berbeda (mis. ESPN lalu TheSportsDB): jangan dihitung dua kali oleh Elo.
+    sameGame: db.prepare(`
+      SELECT 1 FROM results WHERE sport = ? AND played_at BETWEEN ? AND ?
+        AND ((home_key = ? AND away_key = ?) OR (home_key = ? AND away_key = ?)) LIMIT 1`),
     insertResult: db.prepare(`
       INSERT INTO results (match_id, sport, league, home_key, away_key, home_name, away_name, hs, as_, played_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
@@ -68,6 +72,7 @@ export function createHistory(db, { now: clock = () => Date.now() } = {}) {
       const ak = teamKey(match.away.name);
       if (!hk || !ak || hk === ak) return false;
       const playedAt = Date.parse(match.kickoff) || clock();
+      if (q.sameGame.get(match.sport, playedAt - 6 * 3_600_000, playedAt + 6 * 3_600_000, hk, ak, ak, hk)) return false;
 
       // 1) Tebakan model sebelum hasil diketahui (uji-mundur bila belum pernah dicatat).
       const pre = analyzeMatch({ ...match, status: 'upcoming', score: null });

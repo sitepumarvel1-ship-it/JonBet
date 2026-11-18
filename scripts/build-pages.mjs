@@ -5,7 +5,8 @@
 //   data/config.json, meta.json, matches.json, results.json, record.json, m/<id>.json (analisis per laga)
 // Browser membaca berkas itu; model dan JonBet AI dijalankan ulang di browser untuk pertanyaan pengguna.
 //
-// Pemakaian:  node scripts/build-pages.mjs [--out dist] [--state .pages-state] [--provider thesportsdb|demo]
+// Pemakaian:  node scripts/build-pages.mjs [--out dist] [--state .pages-state] [--provider auto|espn|thesportsdb|demo]
+// Sumber data: auto (bawaan) = ESPN utama + TheSportsDB pelengkap; espn; thesportsdb; demo = data simulasi.
 // Lingkungan: PROVIDER, THESPORTSDB_KEY, OUT_DIR, STATE_DIR
 // Folder state (database SQLite rating Elo, cache HTTP, data terakhir) harus dipertahankan antar build
 // (di GitHub Actions lewat actions/cache) agar model terus belajar dan permintaan ke sumber data hemat.
@@ -15,8 +16,10 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createApp, CSP } from '../server/app.js';
-import { ESPN_ORIGIN } from '../public/js/static/espn.js';
+import { ENDPOINTS as ESPN_LEAGUES, ESPN_ORIGIN } from '../public/js/static/espn.js';
 import { createTsdbProvider } from '../server/providers/thesportsdb.js';
+import { createEspnProvider } from '../server/providers/espn.js';
+import { createCompositeProvider } from '../server/providers/composite.js';
 import { SPORTS, publicSport } from '../server/sports.js';
 import { DISCLAIMER } from '../server/ai/explainer.js';
 import { matchFile } from '../public/js/static/paths.js';
@@ -148,7 +151,7 @@ async function collect(app, t, { maxBundles }) {
   return { matches, meta, files, results, record, health, demo };
 }
 
-function writeData(dataDir, t, snap, { provider, stale = false, lastError = null, fallbackActive = false }) {
+function writeData(dataDir, t, snap, { provider, stale = false, lastError = null, fallbackActive = false, sources = null }) {
   const builtAt = new Date(t).toISOString();
   const demo = snap.demo;
   const dir = (f) => path.join(dataDir, f);
@@ -162,6 +165,7 @@ function writeData(dataDir, t, snap, { provider, stale = false, lastError = null
   writeJson(dir('meta.json'), {
     ok: true, builtAt, provider, demo, fallbackActive, stale, lastError, ai: 'builtin',
     results: snap.health.results, matches: snap.matches.length,
+    ...(sources ? { sources } : {}),
   });
   fs.writeFileSync(dir('matches.json'), JSON.stringify({ builtAt, meta: { ...snap.meta, demo, stale, fallback: fallbackActive }, matches: snap.matches }, round5));
   writeJson(dir('results.json'), { builtAt, ...snap.results });
@@ -238,18 +242,21 @@ function copySite(outDir) {
 export async function buildPages({
   outDir = path.join(ROOT, 'dist'),
   stateDir = path.join(ROOT, '.pages-state'),
-  provider = 'thesportsdb',
+  provider = 'auto',
   key = '3',
   now = () => Date.now(),
   fetchImpl = globalThis.fetch,
   log = (...a) => console.log(...a),
   gapMs,
+  espnGapMs,
   retryDelayMs,
   sleep,
   maxBundles = 1500,
   backfillDays = 14,
+  espnBackfillChunks = 4, // x 15 hari = 60 hari riwayat hasil dari ESPN (satu permintaan per liga per potongan)
   backfillBudgetMs = 8 * 60_000,
 } = {}) {
+  if (!['auto', 'espn', 'thesportsdb', 'demo'].includes(provider)) throw new Error(`Sumber data tidak dikenal: "${provider}" (pilihan: auto, espn, thesportsdb, demo)`);
   outDir = path.resolve(outDir);
   stateDir = path.resolve(stateDir);
   if (outDir === ROOT || outDir === path.parse(outDir).root || outDir.split(path.sep).length < 3) throw new Error(`Folder keluaran tidak aman: ${outDir}`);
@@ -273,34 +280,70 @@ export async function buildPages({
   }
 
   /* ---- data nyata ---- */
-  const stats = {};
-  const throttled = makeFetch({ fetchImpl, cacheFile: path.join(stateDir, 'http-cache.json'), now, gapMs: gapMs ?? (FREE_KEYS.has(String(key)) ? 2200 : 0), retryDelayMs, sleep, stats });
-  const primary = createTsdbProvider({ key, fetchImpl: throttled, now, perMinute: 1e9, timeoutMs: 20_000 });
-  const app = createApp({ dbPath: path.join(stateDir, 'jonbet.db'), provider: 'thesportsdb', fallbackDemo: false, primaryProvider: primary, now, log: (...a) => log('[sumber]', ...a) });
+  const tsdbStats = {};
+  const espnStats = {};
+  const tsdbFetch = makeFetch({ fetchImpl, cacheFile: path.join(stateDir, 'http-cache.json'), now, gapMs: gapMs ?? (FREE_KEYS.has(String(key)) ? 2200 : 0), retryDelayMs, sleep, stats: tsdbStats });
+  // ESPN tidak dibatasi seketat kunci gratis TheSportsDB: jeda pendek, coba ulang sekali, tanpa cache disk (respons besar dan cepat basi).
+  const espnFetch = makeFetch({ fetchImpl, cacheFile: null, now, gapMs: espnGapMs ?? gapMs ?? 120, retries: 1, retryDelayMs: retryDelayMs ?? 1500, sleep, stats: espnStats });
+  const tsdb = createTsdbProvider({ key, fetchImpl: tsdbFetch, now, perMinute: 1e9, timeoutMs: 20_000 });
+  const espn = createEspnProvider({ fetchImpl: espnFetch, now, timeoutMs: 20_000, log: (...a) => log('[espn]', ...a) });
+  const primary = provider === 'thesportsdb' ? tsdb : provider === 'espn' ? espn : createCompositeProvider({ primary: espn, secondary: tsdb, log: (...a) => log('[sumber]', ...a) });
+  const app = createApp({ dbPath: path.join(stateDir, 'jonbet.db'), provider, fallbackDemo: false, primaryProvider: primary, now, log: (...a) => log('[sumber]', ...a) });
+  const used = provider === 'thesportsdb' ? [tsdbStats] : provider === 'espn' ? [espnStats] : [tsdbStats, espnStats];
+  const sum = (k) => used.reduce((n, x) => n + (x[k] || 0), 0);
 
   let error = null;
   try {
-    // Isi riwayat hasil (untuk rating Elo) dari yang terlama ke terbaru; dilanjutkan di build berikutnya bila waktu habis.
-    const bfFile = path.join(stateDir, 'backfill.json');
-    let next = readJson(bfFile, { next: backfillDays }).next;
     const deadline = Date.now() + backfillBudgetMs;
-    while (next >= 1 && Date.now() < deadline) {
-      const dayStart = t - next * DAY;
-      try { await app.service.fetchList({ from: dayStart - 12 * HOUR, to: dayStart + 12 * HOUR, sports: null }); } catch (e) { log('Riwayat hari ke-', next, 'gagal:', e.message); break; }
-      next--;
-      writeJson(bfFile, { next });
+
+    // 1) Riwayat hasil dari ESPN (untuk rating Elo): potongan 15 hari, dari yang terlama; dilanjutkan di build berikutnya bila waktu habis.
+    if (provider !== 'thesportsdb') {
+      const file = path.join(stateDir, 'backfill-espn.json');
+      let next = readJson(file, { next: espnBackfillChunks }).next;
+      while (next >= 1 && Date.now() < deadline) {
+        try { app.history.ingestMany(await espn.listMatches({ from: t - next * 15 * DAY, to: t - (next - 1) * 15 * DAY, sports: null })); } catch (e) { log('Riwayat ESPN potongan', next, 'gagal:', e.message); break; }
+        next--;
+        writeJson(file, { next });
+      }
     }
+
+    // 2) Riwayat hasil TheSportsDB per hari (kunci gratis dibatasi permintaannya). Pada mode auto hanya untuk cabang yang tidak dicakup ESPN,
+    //    agar rating satu tim tidak terpecah dua oleh perbedaan penulisan nama antar sumber.
+    if (provider !== 'espn') {
+      const espnSports = new Set(ESPN_LEAGUES.map((e) => e.sport));
+      const only = provider === 'auto' ? SPORTS.map((x) => x.id).filter((id) => !espnSports.has(id)) : null;
+      const bfFile = path.join(stateDir, 'backfill.json');
+      let next = readJson(bfFile, { next: backfillDays }).next;
+      while (next >= 1 && Date.now() < deadline) {
+        const dayStart = t - next * DAY;
+        try { app.history.ingestMany(await tsdb.listMatches({ from: dayStart - 12 * HOUR, to: dayStart + 12 * HOUR, sports: only })); } catch (e) { log('Riwayat hari ke-', next, 'gagal:', e.message); break; }
+        next--;
+        writeJson(bfFile, { next });
+      }
+    }
+
     const snap = await collect(app, t, { maxBundles });
     // Jika setiap permintaan nyata gagal, data yang terkumpul hanya dari cache lama: jangan tampilkan sebagai data baru.
-    if (stats.network > 0 && stats.ok === 0) throw new Error(`Sumber data tidak merespons (${stats.failed} permintaan gagal)`);
-    writeData(dataDir, t, snap, { provider: 'thesportsdb' });
+    if (sum('network') > 0 && sum('ok') === 0) throw new Error(`Sumber data tidak merespons (${sum('failed')} permintaan gagal)`);
+    const rep = espn.report;
+    const sources = {
+      mode: provider,
+      ...(provider !== 'thesportsdb' ? { espn: rep ? { leagues: rep.tried, ok: rep.ok, events: rep.events, failed: rep.failed.slice(0, 20).map((f) => f.path), rangeSuspect: rep.rangeSuspect } : null } : {}),
+      ...(provider !== 'espn' ? { thesportsdb: { requests: tsdbStats.network, cached: tsdbStats.cached, failed: tsdbStats.failed } } : {}),
+    };
+    writeData(dataDir, t, snap, { provider, sources });
     fs.rmSync(lastDir, { recursive: true, force: true });
     fs.cpSync(dataDir, lastDir, { recursive: true });
-    log(`Data nyata: ${snap.matches.length} pertandingan, ${snap.health.results} hasil di riwayat. Permintaan: ${stats.network} jaringan, ${stats.cached} dari cache, ${stats.failed} gagal (${stats.fallback} dipulihkan dari cache lama).`);
+    const bySource = snap.matches.reduce((o, m) => { o[m.source] = (o[m.source] || 0) + 1; return o; }, {});
+    log(`Data nyata: ${snap.matches.length} pertandingan (${Object.entries(bySource).map(([k, v]) => `${k} ${v}`).join(', ')}), ${snap.health.results} hasil di riwayat.`);
+    if (rep) log(`ESPN: ${rep.ok} dari ${rep.tried} liga merespons${rep.failed.length ? `; gagal: ${rep.failed.slice(0, 8).map((f) => f.path).join(', ')}${rep.failed.length > 8 ? ', ...' : ''}` : ''}.`);
+    if (rep?.rangeSuspect) log(`ESPN: ${rep.rangeSuspect} liga tampaknya mengabaikan rentang tanggal (hanya satu hari yang kembali); diambil per hari.`);
+    log(`Permintaan: ${sum('network')} jaringan, ${sum('cached')} dari cache, ${sum('failed')} gagal (${sum('fallback')} dipulihkan dari cache lama).`);
   } catch (err) {
     error = err;
   } finally {
-    throttled.save();
+    tsdbFetch.save();
+    espnFetch.save();
     await app.close(); // menutup SQLite dengan rapi (menggabungkan berkas WAL ke database)
   }
   if (!error) return { outDir, outcome: 'fresh', matches: fs.readdirSync(path.join(dataDir, 'm')).length, version };
@@ -318,7 +361,7 @@ export async function buildPages({
   const demoApp = createApp({ dbPath: ':memory:', provider: 'demo', now, log: () => {} });
   try {
     const snap = await collect(demoApp, t, { maxBundles });
-    writeData(dataDir, t, snap, { provider: 'thesportsdb', fallbackActive: true, lastError: msg.slice(0, 200) });
+    writeData(dataDir, t, snap, { provider, fallbackActive: true, lastError: msg.slice(0, 200) });
   } finally { await demoApp.close(); }
   log('Belum ada data lama: memakai data simulasi (ditandai jelas di aplikasi).');
   return { outDir, outcome: 'demo', matches: fs.readdirSync(path.join(dataDir, 'm')).length, version, error: msg };
@@ -331,7 +374,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const result = await buildPages({
     outDir: arg('out', process.env.OUT_DIR || path.join(ROOT, 'dist')),
     stateDir: arg('state', process.env.STATE_DIR || path.join(ROOT, '.pages-state')),
-    provider: (arg('provider', process.env.PROVIDER || 'thesportsdb')).toLowerCase(),
+    provider: (arg('provider', process.env.PROVIDER || 'auto')).toLowerCase(),
     key: process.env.THESPORTSDB_KEY || '3',
   });
   if (result.outcome !== 'fresh') console.log(`::warning title=JonBet::Build memakai ${result.outcome === 'stale' ? 'data lama (tertunda)' : 'data simulasi'}: ${result.error}`);

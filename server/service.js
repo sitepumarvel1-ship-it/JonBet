@@ -106,7 +106,8 @@ export function createService({ primary, fallback, history, community, now = () 
 
   async function get(id) {
     const prefix = String(id).split(':')[0];
-    const provider = providers.get(prefix === 'demo' ? 'demo' : prefix === 'tsdb' ? 'thesportsdb' : '');
+    // demo -> penyedia demo; tsdb/espn -> penyedia utama (penyedia gabungan meneruskan sesuai awalan id).
+    const provider = prefix === 'demo' ? providers.get('demo') : (prefix === 'tsdb' || prefix === 'espn') && primary && !primary.isDemo ? primary : null;
     if (!provider) throw new HttpError(404, 'Pertandingan tidak ditemukan.', 'not_found');
     let m;
     try {

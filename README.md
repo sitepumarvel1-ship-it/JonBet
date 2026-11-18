@@ -16,8 +16,8 @@ Butuh Node.js 22.13 atau lebih baru. Tanpa dependensi npm.
 ```bash
 npm run preview:pages  # versi GitHub Pages, data simulasi: http://localhost:8080/jonbet/
 npm run demo           # versi server, data simulasi: http://localhost:3000
-npm start              # versi server, data nyata dari TheSportsDB (lihat "Sumber data")
-npm test               # 127 tes: backend, model, keamanan, build Pages, sumber skor langsung, fuzz
+npm start              # versi server, data nyata dari ESPN + TheSportsDB (lihat "Sumber data")
+npm test               # 146 tes: backend, model, keamanan, build Pages, sumber data ESPN, skor langsung, fuzz
 npm run check          # periksa sintaks semua berkas JS
 npm run test:ui        # uji browser versi server; butuh Google Chrome dan: npm i --no-save playwright-core
 npm run test:ui:static # uji browser versi GitHub Pages di subfolder /jonbet/
@@ -52,7 +52,7 @@ Panduan langkah demi langkah, pengaturan opsional, dan batasannya: **[docs/DEPLO
 |---|---|---|
 | `PORT`, `HOST` | `3000`, `0.0.0.0` | Alamat server |
 | `DB_PATH` | `data/jonbet.db` | Berkas SQLite (akun, tebakan, rating model). Taruh di disk yang awet |
-| `PROVIDER` | `thesportsdb` | `thesportsdb` atau `demo` (juga dibaca `build:pages`) |
+| `PROVIDER` | `auto` | `auto` (ESPN + TheSportsDB), `espn`, `thesportsdb`, atau `demo` (juga dibaca `build:pages`) |
 | `THESPORTSDB_KEY` | `3` | Kunci gratis (`3`). Kunci premium membuka skor live (juga dibaca `build:pages`) |
 | `FALLBACK_DEMO` | `true` | Bila sumber nyata gagal total dan belum ada data, tampilkan data demo (dengan label jelas) |
 | `ANTHROPIC_API_KEY` | kosong | Opsional. Bila diisi, JonBet AI dijawab Claude dari data analisis. Tidak tersedia di versi GitHub Pages (kunci tidak bisa dirahasiakan di situs statis) |
@@ -65,14 +65,17 @@ Panduan langkah demi langkah, pengaturan opsional, dan batasannya: **[docs/DEPLO
 Menjalankan sebagai server sungguhan:
 
 ```bash
-PROVIDER=thesportsdb TRUST_PROXY=true COOKIE_SECURE=true DB_PATH=/data/jonbet.db PORT=8080 npm start
+PROVIDER=auto TRUST_PROXY=true COOKIE_SECURE=true DB_PATH=/data/jonbet.db PORT=8080 npm start
 ```
 
 Taruh di belakang HTTPS. Jalankan satu instance saja: pembatas laju dan penguncian login disimpan di memori proses, dan SQLite butuh disk yang awet.
 
 ## Sumber data
 
-- **TheSportsDB** (kunci gratis): jadwal dan hasil per hari. Status "live" dari kunci gratis bisa terlambat. Skor live yang andal butuh kunci premium (`THESPORTSDB_KEY`). Data hasil kontribusi komunitas, sertakan atribusi bila dipublikasikan.
+- **ESPN** (papan skor publik, tidak resmi; `server/providers/espn.js`): jadwal, hasil, dan status live liga-liga besar sepak bola, basket, football Amerika, baseball, hoki es. Satu permintaan rentang tanggal per liga, tanpa kunci. Sumber utama pada mode `auto`.
+- **TheSportsDB** (`server/providers/thesportsdb.js`): pelengkap untuk cabang yang tidak dicakup ESPN. Kunci gratis dibatasi (menurut dokumentasi pihak ketiga hanya ±5 laga per hari per liga) dan status "live" bisa terlambat; kunci premium (`THESPORTSDB_KEY`) membukanya. Data hasil kontribusi komunitas, sertakan atribusi bila dipublikasikan.
+- **Gabungan** (`server/providers/composite.js`): laga yang sama dari dua sumber hanya tampil sekali (versi ESPN). Satu sumber gagal, yang lain tetap dipakai.
+- Rating Elo dibangun dari ±60 hari hasil ESPN pada build pertama, lalu terus belajar. Laga yang sama dari dua sumber tidak dihitung dua kali.
 - **Demo**: liga dan tim fiktif yang dibangkitkan deterministik, selalu ada laga live. Dipakai untuk mencoba aplikasi dan untuk tes.
 - Bila sumber nyata gagal: tampil data terakhir yang berhasil (ditandai "Data tertunda"), lalu data demo bila belum ada apa pun (ditandai di header).
 
@@ -96,7 +99,7 @@ Di kedua versi, semua teks dari pengguna dan sumber luar dirender sebagai teks, 
 
 ## Batasan yang jujur
 
-- Adapter TheSportsDB **belum diuji terhadap layanan aslinya** (lingkungan pengembangan tidak punya akses ke sana). Diuji dengan fixture dan simulasi gangguan; jalankan sekali dengan jaringan nyata dan periksa dulu.
+- Adapter ESPN dan TheSportsDB **belum diuji terhadap layanan aslinya** (lingkungan pengembangan tidak punya akses ke sana). Diuji dengan fixture berbentuk JSON kedua layanan dan simulasi gangguan. Daftar liga ESPN (`public/js/static/espn.js`) ditulis dari dokumentasi pihak ketiga; hanya sebagian slug yang sempat diverifikasi. Setelah build pertama, periksa `data/meta.json` (bagian `sources`): jumlah liga yang merespons dan yang gagal.
 - Alur kerja GitHub Actions dan penerbitan ke GitHub Pages **belum pernah dijalankan di GitHub sungguhan**. Skrip build, situs, dan uji browser di subfolder sudah diuji berulang dengan sumber data tiruan.
 - Versi GitHub Pages tidak seketika: jadwal disegarkan berkala oleh Actions (paling cepat 5 menit, sering telat; dimatikan GitHub setelah 60 hari tanpa aktivitas). Skor live langsung dari ESPN hanya untuk liga yang tersedia di sana, hanya saat situs terbuka, dan bergantung pada API ESPN yang tidak resmi. Laga lain bisa terlambat beberapa menit. Tebakan hanya di perangkat.
 - Pencocokan ESPN **belum diuji ke ESPN sungguhan** (tanpa akses internet di lingkungan pengembangan): diuji dengan respons tiruan berbentuk JSON ESPN, dan dengan pasangan nama tim yang umum. Nama tim yang sangat berbeda tidak dicocokkan, dengan sengaja.

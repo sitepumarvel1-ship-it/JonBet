@@ -6,7 +6,7 @@ const port = await app.listen();
 
 const src = app.service.health();
 console.log(`JonBet berjalan di http://localhost:${port}`);
-console.log(`Sumber data : ${src.provider}${config.provider === 'thesportsdb' && config.fallbackDemo ? ' (cadangan: demo)' : ''}`);
+console.log(`Sumber data : ${src.provider}${config.provider !== 'demo' && config.fallbackDemo ? ' (cadangan: demo)' : ''}`);
 console.log(`JonBet AI   : ${config.anthropicKey ? `Claude (${config.anthropicModel}) + model bawaan` : 'model bawaan'}`);
 console.log(`LISTENING ${port}`);
 

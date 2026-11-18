@@ -12,6 +12,8 @@ import { createCommunity } from './community.js';
 import { createService } from './service.js';
 import { createDemoProvider } from './providers/demo.js';
 import { createTsdbProvider } from './providers/thesportsdb.js';
+import { createEspnProvider } from './providers/espn.js';
+import { createCompositeProvider } from './providers/composite.js';
 import { SPORTS, SPORTS_BY_ID, isSport, publicSport } from './sports.js';
 import { answer, suggestionsFor, DISCLAIMER } from './ai/explainer.js';
 import { askClaude, buildContext } from './ai/llm.js';
@@ -47,7 +49,7 @@ export const CSP = [
   "frame-ancestors 'none'",
 ].join('; ');
 
-const MATCH_ID_RE = /^(demo|tsdb):[A-Za-z0-9_-]{1,48}$/;
+const MATCH_ID_RE = /^(demo|tsdb|espn):[A-Za-z0-9_-]{1,48}$/;
 const STATUSES = new Set(['all', 'live', 'upcoming', 'finished']);
 const HOUR = 3_600_000;
 
@@ -85,8 +87,13 @@ export function createApp(opts = {}) {
   const demo = createDemoProvider({ now });
   let primary = demo;
   let fallback = null;
-  if (cfg.provider === 'thesportsdb') {
-    primary = opts.primaryProvider || createTsdbProvider({ key: cfg.tsdbKey, now });
+  if (cfg.provider === 'thesportsdb' || cfg.provider === 'espn' || cfg.provider === 'auto') {
+    // auto = ESPN (utama) + TheSportsDB (pelengkap cabang lain); espn / thesportsdb = satu sumber saja.
+    primary = opts.primaryProvider || (cfg.provider === 'thesportsdb'
+      ? createTsdbProvider({ key: cfg.tsdbKey, now })
+      : cfg.provider === 'espn'
+        ? createEspnProvider({ now, log })
+        : createCompositeProvider({ primary: createEspnProvider({ now, log }), secondary: createTsdbProvider({ key: cfg.tsdbKey, now }), log }));
     fallback = cfg.fallbackDemo ? demo : null;
   } else if (opts.primaryProvider) {
     primary = opts.primaryProvider;

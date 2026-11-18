@@ -62,11 +62,30 @@ export const ENDPOINTS = [
   T('icehockey', 'hockey/nhl', /^nhl$|^national hockey league$/),
 ];
 
+// Nama tampilan liga bila respons ESPN tidak memuatnya (nama dari respons selalu diutamakan).
+const LABEL = {
+  'soccer/eng.1': 'English Premier League', 'soccer/eng.2': 'English Championship', 'soccer/eng.3': 'English League One', 'soccer/eng.4': 'English League Two',
+  'soccer/eng.fa': 'FA Cup', 'soccer/eng.league_cup': 'EFL Cup', 'soccer/esp.1': 'Spanish La Liga', 'soccer/esp.2': 'Spanish Segunda Division',
+  'soccer/esp.copa_del_rey': 'Copa del Rey', 'soccer/ger.1': 'German Bundesliga', 'soccer/ger.2': 'German 2. Bundesliga', 'soccer/ger.dfb_pokal': 'DFB-Pokal',
+  'soccer/ita.1': 'Italian Serie A', 'soccer/ita.2': 'Italian Serie B', 'soccer/ita.coppa_italia': 'Coppa Italia', 'soccer/fra.1': 'French Ligue 1',
+  'soccer/fra.2': 'French Ligue 2', 'soccer/ned.1': 'Dutch Eredivisie', 'soccer/por.1': 'Portuguese Primeira Liga', 'soccer/sco.1': 'Scottish Premiership',
+  'soccer/tur.1': 'Turkish Super Lig', 'soccer/bel.1': 'Belgian Pro League', 'soccer/bra.1': 'Brazilian Serie A', 'soccer/arg.1': 'Argentine Liga Profesional',
+  'soccer/mex.1': 'Mexican Liga MX', 'soccer/usa.1': 'Major League Soccer', 'soccer/uefa.champions': 'UEFA Champions League', 'soccer/uefa.europa': 'UEFA Europa League',
+  'soccer/uefa.europa.conf': 'UEFA Conference League', 'soccer/idn.1': 'Indonesian Super League', 'soccer/aus.1': 'Australian A-League', 'soccer/jpn.1': 'Japanese J1 League',
+  'soccer/ksa.1': 'Saudi Pro League', 'basketball/nba': 'NBA', 'basketball/wnba': 'WNBA', 'basketball/womens-college-basketball': "NCAA Women's Basketball",
+  'basketball/mens-college-basketball': "NCAA Men's Basketball", 'football/nfl': 'NFL', 'football/cfl': 'CFL', 'football/college-football': 'NCAA Football',
+  'baseball/mlb': 'MLB', 'hockey/nhl': 'NHL',
+};
+export const leagueLabel = (path) => LABEL[path] || path;
+
 // Cadangan untuk liga sepak bola yang tidak ada di tabel. Belum pasti tersedia; bila gagal akan ditunda lama.
 const GENERIC = { sport: 'football', path: 'soccer/all', generic: true };
 
 /** Endpoint ESPN yang mungkin memuat laga ini (0 atau 1 elemen). */
+const FEED_RE = /^[a-z]+\/[a-z0-9._-]{1,40}$/i;
 export function endpointsFor(match) {
+  // Laga yang datang dari ESPN sudah tahu liga mana (match.feed): tak perlu menebak dari nama liga.
+  if (typeof match?.feed === 'string' && FEED_RE.test(match.feed)) return [ENDPOINTS.find((e) => e.path === match.feed) || { sport: match.sport, path: match.feed }];
   const league = norm(match?.league);
   const hit = ENDPOINTS.find((e) => e.sport === match?.sport && e.re.test(league));
   if (hit) return [hit];
@@ -89,10 +108,17 @@ function scoreOf(c) {
 }
 
 const teamOf = (c) => ({
-  // Singkatan (MCI) dan kota ("Los Angeles") sengaja tidak dipakai: terlalu mudah cocok dengan tim yang salah.
+  // Singkatan (MCI) dan kota ("Los Angeles") sengaja tidak dipakai untuk mencocokkan: terlalu mudah cocok dengan tim yang salah.
   names: unique([c?.team?.displayName, c?.team?.shortDisplayName, c?.team?.name]),
+  abbr: String(c?.team?.abbreviation || '').slice(0, 6),
   score: scoreOf(c),
 });
+
+/** Nama liga dari respons scoreboard (kosong bila tidak ada). */
+export function leagueNameOf(json) {
+  const n = json?.leagues?.[0]?.name;
+  return typeof n === 'string' ? n.replace(/[\u0000-\u001f]/g, '').trim().slice(0, 80) : '';
+}
 
 /** Ubah JSON scoreboard ESPN menjadi daftar peristiwa ringkas. Entri yang bentuknya tidak dikenal dilewati. */
 export function parseScoreboard(json) {
@@ -123,6 +149,7 @@ export function parseScoreboard(json) {
       clock: String(status.displayClock ?? ''),
       clockSec: Number.isFinite(clockSec) && clockSec >= 0 ? clockSec : null,
       detail: String(type.shortDetail || type.detail || ''),
+      venue: typeof comp.venue?.fullName === 'string' ? comp.venue.fullName.slice(0, 80) : null,
     });
   }
   return out;
@@ -179,6 +206,11 @@ const teamScore = (name, variants) => variants.reduce((best, v) => Math.max(best
 export function pickEvent(match, events, { maxGapMs = 8 * 3600_000 } = {}) {
   const kickoff = Date.parse(match?.kickoff);
   if (!Number.isFinite(kickoff) || !match?.home?.name || !match?.away?.name) return null;
+  // Laga yang datang dari ESPN: id-nya pasti, tanpa menebak lewat nama. Bila tidak ada di papan skor, lanjut ke pencocokan nama.
+  if (match.espnId) {
+    const hit = events.find((ev) => ev.id === String(match.espnId));
+    if (hit) return { ev: hit, swapped: false };
+  }
   const cands = [];
   for (const ev of events) {
     const gap = Math.abs(ev.date - kickoff);

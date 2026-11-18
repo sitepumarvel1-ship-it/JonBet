@@ -11,8 +11,8 @@ export const config = Object.freeze({
   host: env.HOST || '0.0.0.0',
   dbPath: env.DB_PATH || path.join(root, 'data', 'jonbet.db'),
 
-  // Sumber data pertandingan: "thesportsdb" (data nyata) atau "demo" (data simulasi).
-  provider: (env.PROVIDER || 'thesportsdb').toLowerCase(),
+  // Sumber data pertandingan: "auto" (ESPN + TheSportsDB, data nyata), "espn", "thesportsdb", atau "demo" (data simulasi).
+  provider: (env.PROVIDER || 'auto').toLowerCase(),
   // Jika sumber nyata gagal total dan belum ada data sama sekali, pakai data demo (dengan label jelas di UI).
   fallbackDemo: env.FALLBACK_DEMO !== 'false',
   tsdbKey: env.THESPORTSDB_KEY || '3',

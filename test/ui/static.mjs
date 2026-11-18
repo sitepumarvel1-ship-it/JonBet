@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { startStaticSite, launch, watch } from './helpers.mjs';
 import { buildPages } from '../../scripts/build-pages.mjs';
 import { fakeTsdb } from '../fake-tsdb.js';
-import { board, espnEvent } from '../fake-espn.js';
+import { board, espnEvent, fakeEspnSite, routeFetch } from '../fake-espn.js';
 
 const OUT = process.env.SHOTS || fileURLToPath(new URL('../../test-results/ui-static', import.meta.url));
 fs.mkdirSync(OUT, { recursive: true });
@@ -56,8 +56,23 @@ const liveTsdb = async (url) => {
 const builtLive = await buildPages({ outDir: path.join(tmp, 'live', 'dist'), stateDir: path.join(tmp, 'live', 'state'), provider: 'thesportsdb', fetchImpl: liveTsdb, gapMs: 0, retryDelayMs: 0, log: quiet });
 assert(builtLive.outcome === 'fresh', `build situs live: ${builtLive.outcome}`);
 
+// Situs D: mode "auto" (ESPN utama + TheSportsDB pelengkap). Ke ESPN palsu ditambahkan satu laga live Premier League (id 777001) agar selalu ada yang live.
+const AUTO_ID = 'espn:777001';
+const autoLiveEv = (hs, as, clock) => espnEvent({ id: '777001', date: NOW - 35 * 60_000, home: 'Manchester City', away: 'Arsenal', hs, as, state: 'in', period: 1, clock, venue: 'Etihad Stadium' });
+const espnSite = fakeEspnSite({ now: NOW });
+const autoEspn = async (url, init) => {
+  const res = await espnSite.impl(url, init);
+  if (!/\/soccer\/eng\.1\/scoreboard/.test(String(url))) return res;
+  const j = await res.json();
+  j.events.push(autoLiveEv(0, 0, "35'"));
+  return new Response(JSON.stringify(j), { status: 200 });
+};
+const builtAuto = await buildPages({ outDir: path.join(tmp, 'auto', 'dist'), stateDir: path.join(tmp, 'auto', 'state'), provider: 'auto', fetchImpl: routeFetch({ impl: autoEspn }, fakeTsdb()), gapMs: 0, retryDelayMs: 0, log: quiet });
+assert(builtAuto.outcome === 'fresh', `build situs auto: ${builtAuto.outcome}`);
+
 const siteDemo = await startStaticSite(built.outDir);
 const siteLive = await startStaticSite(builtLive.outDir);
+const siteAuto = await startStaticSite(builtAuto.outDir);
 const siteReal = await startStaticSite(builtReal.outDir);
 const browser = await launch();
 
@@ -483,12 +498,12 @@ const waitChip = async (page, re, timeout = 9000) => {
 // Gangguan ESPN yang disengaja menimbulkan galat jaringan bawaan peramban; yang lain (CSP, galat skrip, aset gagal) tetap dihitung.
 // Baris konsol "Failed to load resource" tidak memuat alamat, tetapi kembarannya ([requestfailed]/[http NNN]) memuat dan tetap diperiksa.
 const relevant = (issues) => issues.filter((i) => !/favicon/.test(i) && !/^\[console\.error\] Failed to load resource/.test(i) && (!/espn/.test(i) || /Content Security Policy|Refused/i.test(i)));
-async function openLive(hash = '/matches') {
+async function openLive(hash = '/matches', site = siteLive) {
   const ctx = await newCtx('desktop-1440'); const page = await ctx.newPage(); const issues = watch(page);
   resetEspn();
   await page.route(ESPN_GLOB, espnHandler);
   await page.clock.install({ time: Date.now() });
-  await ready(page, siteLive, hash);
+  await ready(page, site, hash);
   return { ctx, page, issues };
 }
 
@@ -616,6 +631,30 @@ await test('skor langsung: ESPN bilang selesai -> laga ditandai Selesai di brows
   await page.waitForTimeout(400);
   assert(plCalls() === n, `liga yang semua lanjutannya selesai masih ditanya: ${plCalls() - n}; urutan: ${espn.calls.map((u) => new URL(u).pathname.split('/').slice(-2, -1)[0]).join(',')}; sebelum=${n}`);
   noIssues(relevant(issues), 'selesai');
+  await ctx.close();
+});
+
+await test('data ESPN: liga dan tim sungguhan, tanpa penanda simulasi; skor live naik lewat id ESPN walau nama tim berbeda', async () => {
+  const { ctx, page, issues } = await openLive('/matches', siteAuto);
+  // browser mendapat nama yang sengaja berbeda dari data build: hanya id (dan jalur liga) yang bisa menghubungkannya
+  const browserEv = (hs, as, clock) => espnEvent({ id: '777001', date: NOW - 35 * 60_000, home: 'Man. City (nama ESPN lain)', away: 'The Gunners', hs, as, state: 'in', period: 1, clock });
+  espn.pl = board(browserEv(0, 0, "35'"));
+  assert(!/Data simulasi|Demo/.test(await page.evaluate(() => document.body.innerText)), 'situs data nyata tidak boleh berlabel simulasi');
+  const text = await page.evaluate(() => document.querySelector('main').innerText);
+  assert(/English Premier League/.test(text) && /Manchester City/.test(text), 'liga dan tim dari ESPN tampil');
+  assert(!/Liga Antah/.test(text), 'tidak ada liga rekaan');
+  await waitChip(page, /Skor langsung/);
+  await waitScore(page, AUTO_ID, '0-0');
+  espn.pl = board(browserEv(2, 1, "41'"));
+  await advance(page, 21_000);
+  await waitScore(page, AUTO_ID, '2-1');
+  assert(/41'/.test(await rowText(page, AUTO_ID)), 'menit dari ESPN');
+  assert(espn.calls.some((u) => /\/soccer\/eng\.1\/scoreboard$/.test(u)), `jalur liga dari data laga: ${espn.calls.join(' ')}`);
+  await page.goto(`${siteAuto.url}${hrefOf(AUTO_ID)}`);
+  await until(page, () => !!document.querySelector('.hero .live-note'))
+  assert(/Skor langsung dari ESPN/.test(await page.$eval('.live-note', (e) => e.textContent)), 'keterangan sumber');
+  assert((await page.$eval('.hero-score .big', (e) => e.textContent)) === '2–1', 'skor di detail');
+  noIssues(relevant(issues), 'data-espn');
   await ctx.close();
 });
 

@@ -20,6 +20,7 @@ export function aboutView() {
       h('h2', {}, 'Batasan'),
       h('ul', {},
         h('li', {}, 'Model hanya memakai hasil historis. Cedera, susunan pemain, cuaca, dan motivasi tidak ikut dihitung.'),
+        h('li', {}, 'Rating tim dibangun dari hasil beberapa minggu terakhir yang tersedia, bukan satu musim penuh. Tim yang jarang terlihat punya skor keyakinan rendah, dan angkanya sebaiknya dibaca sebagai perkiraan kasar.'),
         h('li', {}, 'Peluang 70% berarti kira-kira 7 dari 10 laga serupa berakhir begitu, bukan bahwa hasilnya pasti.'),
         h('li', {}, 'Rekam jejak model dihitung dengan uji-mundur: tiap laga ditebak memakai data sebelum laga itu. Hasil lampau tidak menjamin hasil mendatang.')),
       h('h2', {}, 'Sumber data'),
@@ -27,7 +28,7 @@ export function aboutView() {
         ? h('p', {}, STATIC
           ? 'Saat ini aplikasi memakai data simulasi (liga dan tim fiktif) karena pengambilan data nyata belum berhasil.'
           : 'Saat ini aplikasi memakai data simulasi (liga dan tim fiktif) untuk demonstrasi. Hubungkan sumber data nyata di pengaturan server.')
-        : h('p', {}, 'Jadwal dan hasil berasal dari TheSportsDB, basis data olahraga hasil kontribusi komunitas, sehingga sesekali ada data yang terlambat atau kurang lengkap.'),
+        : h('p', {}, 'Jadwal, hasil, dan skor liga-liga besar (sepak bola, basket, football Amerika, baseball, hoki es) berasal dari papan skor publik ESPN. Cabang lain, dan liga yang tidak ada di ESPN, berasal dari TheSportsDB, basis data olahraga hasil kontribusi komunitas, sehingga datanya sesekali terlambat atau kurang lengkap. Kedua sumber tidak memberi jaminan, dan ESPN tidak menyediakan API resmi untuk ini.'),
       STATIC ? h('p', {}, 'Pada versi ini jadwal dan hasil disegarkan otomatis oleh GitHub Actions tiap beberapa menit (jam data terakhir tampil di pojok atas). Untuk laga yang sedang berlangsung di liga yang tersedia, skor diambil langsung dari ESPN lewat browser kamu tiap sekitar 20 detik. Laga lain tetap memakai data jadwal dan bisa terlambat beberapa menit; di halaman laga tertulis skornya dari sumber yang mana. Sumber langsung itu tidak resmi dan bisa berhenti bekerja sewaktu-waktu, dan ESPN dapat melihat alamat IP kamu saat browser menghubunginya.') : null,
       h('h2', {}, 'Komunitas'),
       h('p', {}, STATIC

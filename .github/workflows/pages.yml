@@ -38,7 +38,7 @@ jobs:
       - name: Bangun situs
         run: npm run build:pages
         env:
-          PROVIDER: ${{ vars.JONBET_PROVIDER || 'thesportsdb' }}
+          PROVIDER: ${{ vars.JONBET_PROVIDER || 'auto' }}
           THESPORTSDB_KEY: ${{ secrets.THESPORTSDB_KEY }}
 
       - name: Simpan state untuk build berikutnya

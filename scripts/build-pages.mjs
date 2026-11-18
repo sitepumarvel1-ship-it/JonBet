@@ -105,7 +105,7 @@ export function makeFetch({ fetchImpl = globalThis.fetch, cacheFile = null, now 
         const res = await fetchImpl(url, init);
         if (res.status === 429 || res.status >= 500) { lastErr = new Error(`HTTP ${res.status}`); continue; }
         const body = await res.text();
-        if (res.ok) stats.ok++;
+        if (res.ok) stats.ok++; else stats.rejected = (stats.rejected || 0) + 1; // 4xx (mis. 403 diblokir) bukan 'gagal' jaringan, tetapi harus terlihat
         if (res.ok && (ttl || emptyTtl)) {
           const e = emptyTtl ? isEmptyBoard(body) : false;
           if (ttl || e) cache[url] = { at: now(), body, ...(e ? { e: 1 } : {}) };
@@ -351,7 +351,7 @@ export async function buildPages({
     const sources = {
       mode: provider,
       ...(provider !== 'thesportsdb' ? { espn: rep ? { leagues: rep.tried, ok: rep.ok, events: rep.events, failed: rep.failed.slice(0, 20).map((f) => f.path), rangeSuspect: rep.rangeSuspect, mode: rep.mode } : null } : {}),
-      ...(provider !== 'espn' ? { thesportsdb: { requests: tsdbStats.network, cached: tsdbStats.cached, failed: tsdbStats.failed } } : {}),
+      ...(provider !== 'espn' ? { thesportsdb: { requests: tsdbStats.network, cached: tsdbStats.cached, failed: tsdbStats.failed, rejected: tsdbStats.rejected || 0, ok: tsdbStats.ok } } : {}),
     };
     writeData(dataDir, t, snap, { provider, sources });
     fs.rmSync(lastDir, { recursive: true, force: true });
@@ -361,6 +361,7 @@ export async function buildPages({
     if (rep) log(`ESPN: ${rep.ok} dari ${rep.tried} liga merespons${rep.failed.length ? `; gagal: ${rep.failed.slice(0, 8).map((f) => f.path).join(', ')}${rep.failed.length > 8 ? ', ...' : ''}` : ''}.`);
     if (rep?.mode && rep.mode !== 'range') log(`ESPN: memakai mode permintaan "${rep.mode}" (bentuk rentang tanggal ditolak ESPN).`);
     if (rep?.rangeSuspect) log(`ESPN: ${rep.rangeSuspect} liga tampaknya mengabaikan rentang tanggal (hanya satu hari yang kembali); diambil per hari.`);
+    if (provider !== 'espn' && (tsdbStats.rejected || 0) > 0) log(`TheSportsDB: ${tsdbStats.rejected} dari ${tsdbStats.network} permintaan ditolak (bukan 2xx, mis. HTTP 403); ${tsdbStats.ok || 0} berhasil. Cabang di luar ESPN akan tipis atau kosong.`);
     log(`Permintaan: ${sum('network')} jaringan, ${sum('cached')} dari cache, ${sum('failed')} gagal (${sum('fallback')} dipulihkan dari cache lama).`);
   } catch (err) {
     error = err;

@@ -389,6 +389,17 @@ test('build auto: ESPN menolak rentang tanggal (HTTP 400 seperti di GitHub) -> t
   assert.ok(second < before / 2, `build kedua jauh lebih hemat: ${second} vs ${before}`);
 });
 
+test('build auto: TheSportsDB menjawab 403 -> ESPN tetap dipakai dan penolakan terlihat di meta.json (bukan "0 gagal")', async () => {
+  const espn = fakeEspnSite({ now: T0 });
+  const blocked = { impl: async () => new Response('forbidden', { status: 403 }) };
+  const r = await buildPages(buildOpts(tmp('b403'), tmp('b403s'), { fetchImpl: routeFetch(espn, blocked) }));
+  assert.equal(r.outcome, 'fresh');
+  const meta = readJ(r.outDir, 'data/meta.json');
+  assert.equal(meta.demo, false);
+  assert.ok(meta.sources.thesportsdb.rejected > 0, 'penolakan 403 tercatat');
+  assert.equal(meta.sources.thesportsdb.ok, 0);
+});
+
 test('build auto: ESPN mati -> TheSportsDB saja, tetap segar; sebagian liga gagal -> sisanya tetap', async () => {
   const dead = fakeEspnSite({ now: T0, failAll: true });
   const r = await buildPages(buildOpts(tmp('d1'), tmp('d1s'), { fetchImpl: routeFetch(dead, fakeTsdb({ now: T0 })) }));

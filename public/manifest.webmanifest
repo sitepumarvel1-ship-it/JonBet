@@ -1,0 +1,47 @@
+{
+  "name": "JonBet",
+  "short_name": "JonBet",
+  "description": "Analisis dan prediksi pertandingan semua cabang olahraga, dengan penjelasan JonBet AI.",
+  "lang": "id",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0c0e1f",
+  "theme_color": "#0c0e1f",
+  "categories": [
+    "sports",
+    "news"
+  ],
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Laga live",
+      "url": "./#/matches?status=live"
+    },
+    {
+      "name": "Komunitas",
+      "url": "./#/community"
+    }
+  ]
+}

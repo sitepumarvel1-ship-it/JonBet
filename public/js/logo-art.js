@@ -1,0 +1,23 @@
+// Gambar logo JonBet: perisai berisi huruf "j" (titiknya adalah bola) dan garis tren naik.
+export const MARK_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96">
+<defs>
+<linearGradient id="jb-shield" x1="14" y1="6" x2="82" y2="92" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#5563F5"/><stop offset="1" stop-color="#1A1D66"/></linearGradient>
+<linearGradient id="jb-j" x1="0" y1="24" x2="0" y2="72" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FFD166"/><stop offset="1" stop-color="#FF7A3D"/></linearGradient>
+<linearGradient id="jb-trend" x1="18" y1="62" x2="78" y2="30" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#8FA0FF" stop-opacity="0"/><stop offset="1" stop-color="#C9D1FF"/></linearGradient>
+</defs>
+<path d="M48 5 L85 25 V58 C85 74 69 86 48 92 C27 86 11 74 11 58 V25 Z" fill="url(#jb-shield)"/>
+<path d="M48 9.5 L81 27.2 V57.5 C81 71 67 82 48 87.6 C29 82 15 71 15 57.5 V27.2 Z" fill="none" stroke="#9AA6FF" stroke-opacity=".35" stroke-width="1.5"/>
+<path d="M17 64 C33 56 52 52 77 31" fill="none" stroke="url(#jb-trend)" stroke-width="4" stroke-linecap="round"/>
+<circle cx="77" cy="31" r="4.2" fill="#E6EAFF"/>
+<path d="M53 33 V57 C53 66.5 47.5 71.5 39.5 71.5 C34.5 71.5 30.5 69.5 27.5 65.5" fill="none" stroke="url(#jb-j)" stroke-width="9.5" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="53" cy="20" r="6.2" fill="#FFFFFF"/>
+<path d="M53 16.6 L56 18.8 L54.9 22.3 H51.1 L50 18.8 Z" fill="#1A1D66" fill-opacity=".85"/>
+</svg>`;
+
+/** Ikon aplikasi: latar gelap penuh + perisai di tengah (aman untuk "maskable"). */
+export function iconSvg(scale = 0.64) {
+  const size = 96 * scale;
+  const off = (96 - size) / 2;
+  const inner = MARK_SVG.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '');
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><rect width="96" height="96" fill="#0C0E1F"/><g transform="translate(${off} ${off}) scale(${scale})">${inner}</g></svg>`;
+}

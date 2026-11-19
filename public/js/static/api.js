@@ -108,7 +108,20 @@ export async function handle(path, { method = 'GET', body } = {}) {
       const [raw, cfg, { answer }] = await Promise.all([data.bundle(decode(m[1])), data.config(), import('../shared/ai/explainer.js')]);
       const b = feed ? feed.applyBundle(raw) : raw; // JonBet AI menjawab dari skor terkini, bukan skor snapshot
       const sport = cfg.sports.find((s) => s.id === b.match.sport);
-      const r = answer({ question, match: b.match, analysis: b.analysis, form: b.form, h2h: b.h2h, sport });
+      const input = { question, match: b.match, analysis: b.analysis, form: b.form, h2h: b.h2h, sport };
+      const r = answer(input);
+      // Bila pengguna memasukkan kunci Claude sendiri: Claude menjawab dari angka analisis; gagal apa pun -> model bawaan.
+      const { getClaude } = await import('./claude.js');
+      const cl = getClaude();
+      if (cl) {
+        try {
+          const llm = await import('../shared/ai/llm.js');
+          const reply = await llm.askClaude({ apiKey: cl.key, model: cl.model, context: llm.buildContext(input), history: Array.isArray(body?.history) ? body.history : [], question, browser: true });
+          return { reply, source: 'claude', suggestions: r.suggestions };
+        } catch (err) {
+          return { reply: r.reply, source: 'jonbet', degraded: true, degradedReason: /HTTP 401|HTTP 403/.test(String(err?.message)) ? 'kunci' : 'umum', suggestions: r.suggestions };
+        }
+      }
       return { reply: r.reply, source: 'jonbet', suggestions: r.suggestions };
     }
 

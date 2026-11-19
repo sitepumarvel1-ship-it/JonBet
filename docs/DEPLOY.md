@@ -136,6 +136,12 @@ Membangun situs dengan data simulasi lalu membukanya di `http://localhost:8080/j
 - **Keamanan.** GitHub Pages tidak bisa memasang header keamanan, jadi kebijakan keamanan konten dipasang lewat tag `<meta>` (tanpa perlindungan `frame-ancestors`, sehingga situs bisa dibingkai halaman lain). Profil lokal tanpa kata sandi: siapa pun yang memakai browser yang sama bisa masuk sebagai profil itu.
 - **Belum diuji di GitHub sungguhan.** Alur kerja (`.github/workflows/pages.yml`) sintaksnya valid, sedangkan skrip build, situs, dan uji browser sudah dijalankan berulang kali di lingkungan pengembangan dengan TheSportsDB tiruan. Ada yang mungkin baru terlihat saat build pertama di GitHub (misalnya versi aksi yang berubah atau izin Pages). Bila gagal, buka log langkah yang merah dan cari baris pertama yang bertanda galat.
 
+## JonBet AI dan Claude (opsional)
+
+JonBet AI bawaan bukan model bahasa: ia memahami pertanyaan dengan aturan (kata kunci, beberapa maksud sekaligus, penyebutan tim, "kenapa") dan menjawab dari angka analisis laga itu. Ia mengaku bila pertanyaannya di luar jangkauan (cuaca, cedera, berita tidak ada di datanya).
+
+Kalau ingin jawaban yang lebih luwes, tiap pengguna bisa memasukkan **kunci API Claude miliknya sendiri**: buka laga, tab **Tanya JonBet AI**, buka **Pakai Claude sungguhan (opsional)**, tempel kunci, pilih model, Simpan. Kunci disimpan hanya di browser perangkat itu (localStorage) dan dikirim langsung ke api.anthropic.com; tidak lewat GitHub atau server lain. Claude hanya diberi angka analisis laga itu dan diinstruksikan menolak saran taruhan. Pemakaian ditagih ke akun Anthropic pemilik kunci, jadi atur batas pengeluaran di konsol Anthropic dan jangan pakai di perangkat bersama. Bila kunci ditolak atau Claude gagal, aplikasi otomatis memakai model bawaan dan memberi tahu. Fitur ini belum diuji ke API Anthropic sungguhan (hanya dengan balasan tiruan).
+
 ## Memperbarui repo yang sudah terpasang
 
 Bila kamu sudah memasang versi sebelumnya dan ingin memakai data ESPN:

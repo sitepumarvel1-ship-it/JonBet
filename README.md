@@ -17,7 +17,7 @@ Butuh Node.js 22.13 atau lebih baru. Tanpa dependensi npm.
 npm run preview:pages  # versi GitHub Pages, data simulasi: http://localhost:8080/jonbet/
 npm run demo           # versi server, data simulasi: http://localhost:3000
 npm start              # versi server, data nyata dari ESPN + TheSportsDB (lihat "Sumber data")
-npm test               # 151 tes: backend, model, keamanan, build Pages, sumber data ESPN, skor langsung, fuzz
+npm test               # 153 tes: backend, model, keamanan, build Pages, sumber data ESPN, skor langsung, fuzz
 npm run check          # periksa sintaks semua berkas JS
 npm run test:ui        # uji browser versi server; butuh Google Chrome dan: npm i --no-save playwright-core
 npm run test:ui:static # uji browser versi GitHub Pages di subfolder /jonbet/
@@ -55,7 +55,7 @@ Panduan langkah demi langkah, pengaturan opsional, dan batasannya: **[docs/DEPLO
 | `PROVIDER` | `auto` | `auto` (ESPN + TheSportsDB), `espn`, `thesportsdb`, atau `demo` (juga dibaca `build:pages`) |
 | `THESPORTSDB_KEY` | `3` | Kunci gratis (`3`). Kunci premium membuka skor live (juga dibaca `build:pages`) |
 | `FALLBACK_DEMO` | `true` | Bila sumber nyata gagal total dan belum ada data, tampilkan data demo (dengan label jelas) |
-| `ANTHROPIC_API_KEY` | kosong | Opsional. Bila diisi, JonBet AI dijawab Claude dari data analisis. Tidak tersedia di versi GitHub Pages (kunci tidak bisa dirahasiakan di situs statis) |
+| `ANTHROPIC_API_KEY` | kosong | Opsional. Bila diisi, JonBet AI dijawab Claude dari data analisis. Di versi GitHub Pages kunci server tidak bisa dirahasiakan, jadi tidak dipakai; sebagai gantinya tiap pengguna bisa memasukkan kunci Claude miliknya sendiri di tab AI (disimpan hanya di perangkatnya) |
 | `ANTHROPIC_MODEL` | `claude-sonnet-5-5` | Model untuk Claude |
 | `ALLOWED_ORIGINS` | kosong | Daftar asal tambahan (dipisah koma) yang boleh mengirim permintaan penulisan, bila tampilan disajikan dari domain lain daripada server |
 | `TRUST_PROXY` | `false` | `true` bila di belakang proxy/CDN (membaca `X-Forwarded-*`) |
@@ -105,6 +105,6 @@ Di kedua versi, semua teks dari pengguna dan sumber luar dirender sebagai teks, 
 - Pencocokan ESPN **belum diuji ke ESPN sungguhan** (tanpa akses internet di lingkungan pengembangan): diuji dengan respons tiruan berbentuk JSON ESPN, dan dengan pasangan nama tim yang umum. Nama tim yang sangat berbeda tidak dicocokkan, dengan sengaja.
 - Data demo adalah simulasi. Akurasi model pada data demo bersifat sirkular dan diberi label "data simulasi". Akurasi pada data nyata baru terlihat setelah aplikasi berjalan beberapa waktu.
 - Model memberi **peluang, bukan jaminan**. Cedera, susunan pemain, cuaca, dan motivasi tidak dihitung.
-- JonBet AI bawaan menjelaskan angka model dengan aturan tetap (bukan model bahasa). Claude hanya dipakai di versi server bila `ANTHROPIC_API_KEY` diisi, dan hanya diberi data analisis.
+- JonBet AI bawaan menjelaskan angka model dengan pemahaman pertanyaan berbasis aturan (kata kunci, banyak maksud, penyebutan tim), bukan model bahasa: ia tidak "berpikir" di luar angka analisis dan mengaku bila pertanyaannya di luar jangkauan. Versi GitHub Pages punya opsi kunci Claude milik pengguna sendiri (dikirim langsung dari browser ke api.anthropic.com, ditagih ke akun pengguna; belum diuji ke API sungguhan, hanya dengan balasan tiruan). Claude hanya dipakai di versi server bila `ANTHROPIC_API_KEY` diisi, dan hanya diberi data analisis.
 - Tes otomatis banyak dan berulang, tetapi tidak ada yang bisa menjamin nol bug.
 - Judi online dilarang di Indonesia; JonBet sengaja tidak memiliki fitur taruhan.

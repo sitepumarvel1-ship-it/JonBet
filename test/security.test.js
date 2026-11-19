@@ -123,7 +123,7 @@ test('semua modul JS klien memakai impor yang ada (tidak ada 404 saat dimuat)', 
   }
   await walk('/js/main.js');
   assert.ok(seen.size >= 15, `hanya ${seen.size} modul`);
-  assert.deepEqual([...sharedSeen].sort(), ['/js/shared/ai/explainer.js', '/js/shared/model/model.js', '/js/shared/util.js']);
+  assert.deepEqual([...sharedSeen].sort(), ['/js/shared/ai/explainer.js', '/js/shared/ai/llm.js', '/js/shared/model/model.js', '/js/shared/util.js']);
 });
 
 test('Origin lintas situs ditolak untuk semua permintaan yang mengubah data; tanpa Origin / Origin sama diterima', async () => {

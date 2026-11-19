@@ -222,6 +222,86 @@ await test('detail laga: semua tab tampil dari bundel data; JonBet AI menjawab d
   await ctx.close();
 });
 
+await test('JonBet AI: kunci Claude milik pengguna (opsional) dipakai langsung ke Anthropic, gagal -> model bawaan, hapus -> kembali bawaan', async () => {
+  const ctx = await newCtx('desktop-1440'); const page = await ctx.newPage(); const issues = watch(page);
+  const eq = (a, b, m) => assert(a === b, `${m || 'tidak sama'}: ${JSON.stringify(a)} !== ${JSON.stringify(b)}`);
+  const KEY = 'sk-ant-uji-0123456789abcdefghijklmnop';
+  const calls = [];
+  let mode = 'ok';
+  await ctx.route('https://api.anthropic.com/**', async (route) => {
+    const req = route.request();
+    calls.push({ headers: req.headers(), body: JSON.parse(req.postData() || '{}') });
+    const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*' };
+    if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+    if (mode === '401') return route.fulfill({ status: 401, headers: cors, contentType: 'application/json', body: '{"error":"x"}' });
+    if (mode === '500') return route.fulfill({ status: 500, headers: cors, contentType: 'application/json', body: '{}' });
+    return route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify({ content: [{ type: 'text', text: 'Jawaban Claude uji 123.' }] }) });
+  });
+  const m = upcoming('football');
+  const seen = []; page.on('request', (r) => seen.push(r.url()));
+  await ready(page, siteDemo, hashOf(m));
+  await page.waitForSelector('.hero');
+  await page.click('[role=tab]:has-text("JonBet AI")');
+  await page.waitForSelector('.bubble.ai');
+  const askQ = async (q) => {
+    const n = (await page.$$('.bubble.ai')).length;
+    await page.fill('.chat-form input', q);
+    await page.press('.chat-form input', 'Enter');
+    await page.waitForFunction((k) => document.querySelectorAll('.bubble.ai').length > k && !document.querySelector('.bubble.typing'), n, { timeout: 8000 });
+    return page.$$eval('.bubble.ai', (b) => b[b.length - 1].textContent);
+  };
+
+  // tanpa kunci: model bawaan, tidak ada panggilan ke Anthropic
+  assert(/Model bawaan JonBet/.test(await askQ('Siapa yang menang?')), 'awal: bawaan');
+  eq(calls.length, 0);
+
+  // simpan kunci: ditolak bila bentuknya salah, diterima bila wajar
+  await page.click('.claude-box summary');
+  await page.fill('.claude-form input[type=password]', 'pendek');
+  await page.click('.claude-form button[type=submit]');
+  assert(/tidak tampak/.test(await page.$eval('.claude-box [role=status]', (e) => e.textContent)), 'kunci salah bentuk ditolak');
+  await page.fill('.claude-form input[type=password]', KEY);
+  await page.selectOption('.claude-form select', 'claude-sonnet-5-5');
+  await page.click('.claude-form button[type=submit]');
+  assert(/Aktif/.test(await page.$eval('.claude-box [role=status]', (e) => e.textContent)));
+  eq(await page.$eval('.claude-form input[type=password]', (e) => e.value), '', 'kolom kunci dikosongkan setelah disimpan');
+
+  const viaClaude = await askQ('Kenapa tuan rumah bisa menang?');
+  assert(/Jawaban Claude uji 123/.test(viaClaude) && /Dijawab oleh Claude/.test(viaClaude), `Claude: ${viaClaude}`);
+  eq(calls.length, 1);
+  const c = calls[0];
+  eq(c.headers['x-api-key'], KEY);
+  eq(c.headers['anthropic-dangerous-direct-browser-access'], 'true');
+  eq(c.body.model, 'claude-sonnet-5-5');
+  assert(c.body.system.includes(m.home.name) && /DATA/.test(c.body.system) && /bertaruh/.test(c.body.system), 'konteks data dan aturan dikirim');
+  eq(c.body.messages.at(-1).content, 'Kenapa tuan rumah bisa menang?');
+  assert(!seen.some((u) => u.includes('127.0.0.1') && u.includes(encodeURIComponent(KEY))), 'kunci tidak ikut ke situs sendiri');
+
+  // Kunci ditolak (401) dan layanan galat (500): jatuh ke model bawaan dengan keterangan jujur
+  mode = '401';
+  const t401 = await askQ('Siapa yang menang?');
+  assert(/Kunci Claude ditolak/.test(t401) && /%/.test(t401), `401: ${t401}`);
+  mode = '500';
+  const t500 = await askQ('Siapa yang menang?');
+  assert(/Claude sedang tidak tersedia/.test(t500) && /%/.test(t500), `500: ${t500}`);
+
+  // kunci tetap ada setelah muat ulang, lalu dihapus
+  await page.reload();
+  await page.waitForSelector('.hero');
+  await page.click('[role=tab]:has-text("JonBet AI")');
+  await page.click('.claude-box summary');
+  assert(/Aktif/.test(await page.$eval('.claude-box [role=status]', (e) => e.textContent)), 'kunci bertahan setelah muat ulang');
+  await page.click('.claude-form button:has-text("Hapus kunci")');
+  assert(/Belum aktif/.test(await page.$eval('.claude-box [role=status]', (e) => e.textContent)));
+  const before = calls.length;
+  assert(/Model bawaan JonBet/.test(await askQ('Siapa yang menang?')), 'setelah hapus: bawaan');
+  eq(calls.length, before, 'tidak ada panggilan ke Anthropic setelah kunci dihapus');
+  // 401 dan 500 dari Anthropic memang disengaja di atas: hanya itu yang boleh muncul sebagai isu.
+  const unexpected = issues.filter((i) => !/api\.anthropic\.com\/v1\/messages|status of (401|500)/.test(i));
+  noIssues(unexpected, 'kunci claude');
+  await ctx.close();
+});
+
 await test('detail laga yang tidak ada / id rusak: pesan jelas, bukan layar kosong', async () => {
   const ctx = await newCtx('ponsel-390'); const page = await ctx.newPage();
   for (const h of ['/match/demo:tidak-ada-9-9', '/match/tsdb:123', '/match/%E0%A4%A', '/match/..%2F..%2Fetc', '/nggak/ada', '/u/bukan_siapa_siapa']) {

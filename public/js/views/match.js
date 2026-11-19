@@ -3,6 +3,7 @@ import { api } from '../api.js';
 import { state, sportOf, emit, on } from '../state.js';
 import { demoNotice, emblem, errorBox, liveLabel, livePill, liveNote, loadingBox, localNotice, predCard, toast, icon } from '../components.js';
 import { STATIC } from '../mode.js';
+import { CLAUDE_MODELS, clearClaude, getClaude, setClaude } from '../static/claude.js';
 import { barList, compareRows, formPills, marginBars, meter, probBar, scoreHeatmap, totalsBars } from '../charts.js';
 import { clock, longWhen, num1, pctInt, untilKickoff } from '../format.js';
 import { setQuery } from '../router.js';
@@ -248,6 +249,35 @@ function communityTab(getBundle, matchId) {
 
 /* -------------------------------------------------------------- JonBet AI */
 
+// Kunci Claude milik pengguna (hanya versi GitHub Pages): disimpan di perangkat ini saja.
+function claudeBox(onChange) {
+  const status = h('p', { class: 'sub', role: 'status' });
+  const key = h('input', { class: 'input', type: 'password', autocomplete: 'off', spellcheck: 'false', placeholder: 'Tempel kunci API Claude (sk-ant-…)', 'aria-label': 'Kunci API Claude' });
+  const model = h('select', { class: 'input', 'aria-label': 'Model Claude' }, CLAUDE_MODELS.map(([v, l]) => h('option', { value: v }, l)));
+  const save = h('button', { class: 'btn btn-primary', type: 'submit' }, 'Simpan kunci');
+  const del = h('button', { class: 'btn', type: 'button' }, 'Hapus kunci');
+  const form = h('form', { class: 'claude-form' }, key, model, h('div', { class: 'claude-actions' }, save, del));
+  const box = h('details', { class: 'claude-box' },
+    h('summary', {}, 'Pakai Claude sungguhan (opsional)'),
+    h('p', { class: 'sub' }, 'Model bawaan menjawab dengan aturan tetap dari angka analisis, jadi tidak bisa membahas di luar itu. Dengan kunci API Claude milikmu, Claude menjawab lebih luwes dari angka analisis yang sama (tetap tanpa saran taruhan).'),
+    h('p', { class: 'sub' }, 'Kunci hanya disimpan di perangkat ini dan dikirim langsung ke Anthropic, tidak lewat server lain. Pemakaian ditagih ke akunmu, jadi atur batas pengeluaran di konsol Anthropic. Pakai hanya di perangkat pribadi.'),
+    form, status);
+  function refresh() {
+    const cur = getClaude();
+    status.textContent = cur ? `Aktif: ${CLAUDE_MODELS.find(([m]) => m === cur.model)?.[1] || cur.model}. Kunci tersimpan di perangkat ini.` : 'Belum aktif: JonBet AI memakai model bawaan.';
+    if (cur) model.value = cur.model;
+    del.hidden = !cur;
+    onChange();
+  }
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    try { setClaude({ key: key.value, model: model.value }); key.value = ''; refresh(); toast('Kunci Claude disimpan di perangkat ini.'); } catch (err) { status.textContent = err.message; }
+  });
+  del.addEventListener('click', () => { clearClaude(); key.value = ''; refresh(); toast('Kunci Claude dihapus.'); });
+  refresh();
+  return box;
+}
+
 function aiTab(getBundle, matchId) {
   const history = [];
   const log = h('div', { class: 'chat-log', role: 'log', 'aria-live': 'polite', 'aria-label': 'Percakapan dengan JonBet AI' });
@@ -278,7 +308,7 @@ function aiTab(getBundle, matchId) {
     try {
       const r = await api(`/api/matches/${encodeURIComponent(matchId)}/ai`, { method: 'POST', body: { message: text, history: history.slice(-6) } });
       typing.remove();
-      bubble('ai', r.reply, r.source === 'claude' ? 'Dijawab oleh Claude dari data analisis' : r.degraded ? 'Model bawaan JonBet (Claude sedang tidak tersedia)' : 'Model bawaan JonBet');
+      bubble('ai', r.reply, r.source === 'claude' ? 'Dijawab oleh Claude dari data analisis' : r.degradedReason === 'kunci' ? 'Kunci Claude ditolak (periksa kunci atau saldo); memakai model bawaan JonBet' : r.degraded ? 'Model bawaan JonBet (Claude sedang tidak tersedia)' : 'Model bawaan JonBet');
       history.push({ role: 'user', content: text }, { role: 'assistant', content: r.reply });
       setSuggestions(r.suggestions || []);
     } catch (e) {
@@ -289,11 +319,17 @@ function aiTab(getBundle, matchId) {
 
   form.addEventListener('submit', (e) => { e.preventDefault(); ask(input.value); });
 
-  const el = h('div', { class: 'section' }, panel('Tanya JonBet AI',
-    h('p', { class: 'sub' }, state.config.ai === 'claude'
+  const intro = h('p', { class: 'sub' });
+  const setIntro = () => {
+    intro.textContent = state.config.ai === 'claude' || (STATIC && getClaude())
       ? 'Jawaban disusun Claude dari angka model pertandingan ini, dengan cadangan model bawaan JonBet.'
-      : 'Jawaban disusun model bawaan JonBet dari angka analisis pertandingan ini.'),
+      : 'Jawaban disusun model bawaan JonBet dari angka analisis pertandingan ini.';
+  };
+  setIntro();
+  const el = h('div', { class: 'section' }, panel('Tanya JonBet AI',
+    intro,
     h('div', { class: 'chat' }, log, sugg, form),
+    STATIC ? claudeBox(setIntro) : null,
     h('p', { class: 'disclaimer' }, 'Bukan saran bertaruh. Semua angka adalah peluang statistik, bukan kepastian.')));
 
   function init() {

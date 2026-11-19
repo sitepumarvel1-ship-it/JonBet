@@ -41,7 +41,7 @@ export function buildContext({ match, analysis: a, form, h2h, sport }) {
 
 const round = (x, d = 3) => (Number.isFinite(x) ? Number(x.toFixed(d)) : null);
 
-export async function askClaude({ apiKey, model, context, history = [], question, fetchImpl = globalThis.fetch, timeoutMs = 20_000 }) {
+export async function askClaude({ apiKey, model, context, history = [], question, fetchImpl = globalThis.fetch, timeoutMs = 20_000, browser = false }) {
   const messages = [];
   for (const h of history.slice(-6)) {
     if (h && (h.role === 'user' || h.role === 'assistant') && typeof h.content === 'string' && h.content.trim()) {
@@ -61,7 +61,8 @@ export async function askClaude({ apiKey, model, context, history = [], question
     const res = await fetchImpl('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       signal: ctl.signal,
-      headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      // Dari browser (kunci milik pengguna sendiri) API mewajibkan header izin akses langsung.
+      headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', ...(browser ? { 'anthropic-dangerous-direct-browser-access': 'true' } : {}) },
       body: JSON.stringify({
         model,
         max_tokens: 600,

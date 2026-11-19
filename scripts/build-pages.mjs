@@ -219,7 +219,7 @@ function listFiles(dir) {
   return out.sort();
 }
 
-export const SHARED_FILES = ['util.js', 'sports.js', 'ai/explainer.js', 'model/model.js'];
+export const SHARED_FILES = ['util.js', 'sports.js', 'ai/explainer.js', 'ai/llm.js', 'model/model.js'];
 
 function copySite(outDir) {
   fs.cpSync(path.join(ROOT, 'public'), outDir, { recursive: true });
@@ -242,10 +242,10 @@ function copySite(outDir) {
 
   // GitHub Pages tidak bisa memasang header, jadi CSP dan penanda mode dipasang lewat <meta>.
   // frame-ancestors tidak berlaku lewat <meta> (diabaikan browser dengan peringatan), jadi dibuang.
-  // connect-src ditambah satu asal: sumber skor langsung (ESPN) yang dipanggil dari browser.
+  // connect-src ditambah asal yang dipanggil dari browser: skor langsung (ESPN) dan, hanya bila pengguna memasukkan kunci sendiri, api.anthropic.com.
   const csp = CSP.split('; ')
     .filter((d) => !d.startsWith('frame-ancestors'))
-    .map((d) => (d.startsWith('connect-src ') ? `${d} ${ESPN_ORIGIN}` : d))
+    .map((d) => (d.startsWith('connect-src ') ? `${d} ${ESPN_ORIGIN} https://api.anthropic.com` : d))
     .join('; ');
   const idx = path.join(outDir, 'index.html');
   const html = fs.readFileSync(idx, 'utf8');

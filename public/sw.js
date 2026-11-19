@@ -7,12 +7,14 @@ const VERSION = 'v2';
 const CACHE = `jonbet-${VERSION}`;
 const SCOPE = new URL('./', self.location).href;
 const at = (p) => new URL(p, SCOPE).href;
+// js/static/claude.js diimpor langsung oleh views/match.js: tanpa itu di cache, aplikasi tidak bisa dibuka saat offline.
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest',
   'css/app.css',
   'js/main.js', 'js/mode.js', 'js/dom.js', 'js/api.js', 'js/state.js', 'js/format.js', 'js/icons.js', 'js/logo.js', 'js/logo-art.js',
   'js/charts.js', 'js/components.js', 'js/router.js', 'js/auth.js',
   'js/views/home.js', 'js/views/matches.js', 'js/views/match.js', 'js/views/community.js', 'js/views/profile.js', 'js/views/about.js',
+  'js/static/claude.js',
   'fonts/inter-400.woff', 'fonts/inter-600.woff', 'fonts/inter-display-700.woff', 'fonts/inter-display-800.woff',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/favicon-64.png',
 ].map(at);

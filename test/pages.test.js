@@ -313,7 +313,7 @@ test('build GitHub Pages (demo): situs lengkap, relatif, CSP lewat meta, setiap 
   assert.ok(csp.includes("default-src 'self'") && csp.includes("script-src 'self'") && !csp.includes('frame-ancestors') && !/unsafe-inline|unsafe-eval/.test(csp), csp);
   // satu-satunya asal luar yang boleh dihubungi browser adalah sumber skor langsung, dan hanya lewat connect-src
   const directives = Object.fromEntries(csp.split('; ').map((d) => [d.split(' ')[0], d.split(' ').slice(1)]));
-  assert.deepEqual(directives['connect-src'], ["'self'", 'https://site.api.espn.com']);
+  assert.deepEqual(directives['connect-src'], ["'self'", 'https://site.api.espn.com', 'https://api.anthropic.com']);
   for (const [k, v] of Object.entries(directives)) if (k !== 'connect-src' && k !== 'img-src') assert.ok(!v.some((x) => /^https?:/.test(x)), `${k} tidak boleh memuat asal luar`);
   assert.ok(!/(?:href|src)="\//.test(html), 'tidak boleh ada rujukan absolut');
   const sw = fs.readFileSync(path.join(dist, 'sw.js'), 'utf8');

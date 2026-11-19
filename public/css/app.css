@@ -533,3 +533,11 @@ dialog.modal::backdrop { background: rgba(5, 6, 16, 0.72); backdrop-filter: blur
   .status-chip span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .wordmark { font-size: 20px; }
 }
+
+/* Kunci Claude opsional (versi GitHub Pages) */
+.claude-box { margin-top: 14px; border: 1px solid var(--line, rgba(255,255,255,.12)); border-radius: 12px; padding: 10px 12px; }
+.claude-box summary { cursor: pointer; font-weight: 600; min-height: 32px; display: flex; align-items: center; }
+.claude-box .sub { margin: 8px 0 0; }
+.claude-form { display: grid; gap: 8px; margin-top: 10px; }
+.claude-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.claude-actions .btn { min-height: 40px; }

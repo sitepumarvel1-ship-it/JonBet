@@ -179,3 +179,51 @@ test('injeksi prompt lewat nama tim dari sumber luar tetap berada di blok DATA d
     assert.ok(!body.messages.some((x) => String(x.content).includes(evil)));
   } finally { await t.close(); }
 });
+
+
+test('askClaude: header izin akses langsung hanya dikirim dari browser', async () => {
+  const sent = [];
+  const fetchImpl = async (_u, init) => { sent.push(init.headers); return { ok: true, status: 200, json: async () => ({ content: [{ type: 'text', text: 'ok' }] }) }; };
+  await askClaude({ apiKey: 'k', model: 'm', context: {}, question: 'q', fetchImpl });
+  await askClaude({ apiKey: 'k', model: 'm', context: {}, question: 'q', fetchImpl, browser: true });
+  assert.equal(sent[0]['anthropic-dangerous-direct-browser-access'], undefined, 'server tidak mengirimnya');
+  assert.equal(sent[1]['anthropic-dangerous-direct-browser-access'], 'true');
+});
+
+test('AI bawaan: memahami pertanyaan wajar (kata utuh, banyak maksud, peran tim, di luar jangkauan, tidak paham)', async () => {
+  const t = await boot();
+  try {
+    const m = (await t.req('GET', '/api/matches?status=upcoming&sport=football')).json.matches[0];
+    const A = async (q) => (await ask(t, m.id, q)).json.reply;
+
+    // "model" dalam kalimat biasa tidak boleh memicu penjelasan cara kerja
+    const r1 = await A('Menurut model, siapa yang unggul?');
+    assert.doesNotMatch(r1, /rating Elo ke tiap tim/, r1);
+    assert.match(r1, /\d+%/);
+    // "informasi" bukan "form"; ringkasan lengkap
+    const r2 = await A('Bisa kasih informasi pertandingan ini?');
+    assert.match(r2, /Rating Elo/);
+    // dua maksud dalam satu pertanyaan dijawab dua-duanya (peluang dan skor), dengan akhiran -nya
+    const r3 = await A(`Berapa peluang ${m.home.name} menang dan skornya?`);
+    assert.match(r3, /Peluang .* menang \d+%/);
+    assert.match(r3, /Skor akhir paling mungkin|Perkiraan skor/);
+    // "kenapa": alasan memuat rating, form, dan penyangkalan statistik
+    const r4 = await A(`Kenapa ${m.away.name} bisa kalah?`);
+    assert.match(r4, /Alasannya|terutama karena/);
+    assert.match(r4, /Rating Elo/);
+    assert.match(r4, /cedera, susunan pemain/);
+    // peran tim: "tim tamu" -> form tim tamu saja
+    const r5 = await A('form tim tamu gimana');
+    assert.ok(r5.includes(m.away.name) && !r5.includes(`${m.home.name}:`), r5);
+    // di luar jangkauan: jujur, bukan ringkasan seolah menjawab
+    const r6 = await A('bagaimana cuaca besok dan siapa pemain yang cedera');
+    assert.match(r6, /tidak ikut dihitung/);
+    // tidak paham: mengaku, menawarkan pertanyaan yang bisa dijawab
+    const r7 = await A('xyzzy plugh');
+    assert.match(r7, /belum menangkap maksud/);
+    // taruhan tetap ditolak
+    assert.match(await A('apa itu handicap asia'), /tidak memberi saran bertaruh/);
+    // jadwal
+    assert.match(await A('kapan mulainya?'), /WIB/);
+  } finally { await t.close(); }
+});

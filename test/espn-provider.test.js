@@ -13,7 +13,7 @@ import { ENDPOINTS, endpointsFor, parseScoreboard, pickEvent, leagueNameOf } fro
 import { MATCH_ID_RE, matchFile } from '../public/js/static/paths.js';
 import { buildPages } from '../scripts/build-pages.mjs';
 import { fakeTsdb } from './fake-tsdb.js';
-import { board, espnEvent, fakeEspnSite, routeFetch, LEAGUE_FIXTURES } from './fake-espn.js';
+import { board, espnEvent, fakeEspnSite, routeFetch, routeFetch3, LEAGUE_FIXTURES } from './fake-espn.js';
 
 const T0 = Date.parse('2026-11-18T05:00:00Z');
 const HOUR = 3_600_000;
@@ -360,12 +360,13 @@ test('build auto: ESPN utama + TheSportsDB pelengkap; liga dan tim nyata, riwaya
   assert.ok(readJ(r.outDir, 'data/record.json').all.backtest.n > 50, 'rekam jejak uji-mundur dari hasil nyata');
 
   // build kedua: hasil yang sama tidak dihitung dua kali, dan permintaan ESPN hanya jendela biasa (riwayat sudah terisi)
-  const calls1 = espn.log.length;
+  const boards = () => espn.log.filter((u) => u.includes('/scoreboard?')).length; // permintaan statistik (/summary) dihitung terpisah
+  const calls1 = boards();
   const games1 = b.ratings.home.games;
   const r2 = await buildPages(buildOpts(tmp('auto2'), state, { fetchImpl: routeFetch(espn, tsdb), now: () => T0 + 600_000 }));
   assert.equal(r2.outcome, 'fresh');
   // liga tanpa laga (balasan kosong, 36 dari 42) di-cache beberapa jam: hanya liga yang berisi yang ditanya lagi
-  assert.equal(espn.log.length - calls1, Object.keys(LEAGUE_FIXTURES).length, 'build berikutnya: hanya liga yang punya laga');
+  assert.equal(boards() - calls1, Object.keys(LEAGUE_FIXTURES).length, 'build berikutnya: hanya liga yang punya laga');
   const b2 = readJ(r2.outDir, 'data', matchFile(up.id));
   assert.equal(b2.ratings.home.games, games1);
 });
@@ -450,4 +451,97 @@ test('build espn saja dan pilihan sumber tidak dikenal', async () => {
   assert.ok(snap.matches.length > 100 && snap.matches.every((m) => m.id.startsWith('espn:')));
   assert.equal(readJ(r.outDir, 'data/config.json').provider, 'espn');
   await assert.rejects(() => buildPages(buildOpts(tmp('e2'), tmp('e2s'), { provider: 'sofascore', fetchImpl: routeFetch(espn, tsdb) })), /tidak dikenal/);
+});
+
+/* ------------------------------------------------------------------ build auto + API publik tanpa kunci */
+
+test('build auto: API publik (OpenLigaDB/MLB/NHL) menambah laga di antara ESPN dan TheSportsDB; kegagalan satu sumber tercatat, bukan fatal', async () => {
+  const iso = (o) => new Date(T0 + o * 3_600_000).toISOString();
+  const mlb = { dates: [{ games: [
+    { gamePk: 777001, gameDate: iso(5), status: { abstractGameState: 'Preview', detailedState: 'Scheduled' }, teams: { away: { team: { name: 'Zzyzx Comets' } }, home: { team: { name: 'Qwerty Owls' } } } },
+  ] }] };
+  const nhl = { games: [{ id: 888001, startTimeUTC: iso(6), gameState: 'FUT', awayTeam: { name: { default: 'Narwhals' }, placeName: { default: 'Zzyzx' }, abbrev: 'ZZY' }, homeTeam: { name: { default: 'Owls' }, placeName: { default: 'Qwerty' }, abbrev: 'QWE' } }] };
+  const mkPub = ({ failMlb = false } = {}) => async (url) => {
+    const u = String(url);
+    if (u.includes('statsapi.mlb.com')) return failMlb ? new Response('x', { status: 500 }) : new Response(JSON.stringify(mlb));
+    if (u.includes('api-web.nhle.com')) return new Response(JSON.stringify(u.endsWith(new Date(T0).toISOString().slice(0, 10)) ? nhl : { games: [] }));
+    return new Response('[]');
+  };
+  const logs = [];
+  const r = await buildPages(buildOpts(tmp('pub'), tmp('pubstate'), { fetchImpl: routeFetch3(fakeEspnSite({ now: T0 }), mkPub(), fakeTsdb({ now: T0 })), log: (...a) => logs.push(a.join(' ')) }));
+  assert.equal(r.outcome, 'fresh');
+  const snap = readJ(r.outDir, 'data/matches.json');
+  const pubM = snap.matches.filter((m) => m.id.startsWith('pub:'));
+  assert.ok(pubM.some((m) => m.id === 'pub:mlb-777001' && m.home.name === 'Qwerty Owls' && m.source === 'public'), pubM.map((m) => m.id).join());
+  assert.ok(pubM.some((m) => m.id === 'pub:nhl-888001'));
+  assert.equal(new Set(snap.matches.map((m) => m.id)).size, snap.matches.length);
+  assert.ok(snap.matches.some((m) => m.id.startsWith('espn:')) && snap.matches.some((m) => m.id.startsWith('tsdb:')));
+  const meta = readJ(r.outDir, 'data/meta.json');
+  assert.equal(meta.sources.public.mlb.ok, true);
+  assert.equal(meta.sources.public.nhl.ok, true);
+  assert.ok(logs.some((l) => /API publik:.*mlb 1 laga/.test(l)), logs.filter((l) => /publik/i.test(l)).join('\n'));
+  // detail laga publik bisa dibuka lewat berkas per-pertandingan
+  assert.ok(fs.existsSync(path.join(r.outDir, 'data', matchFile('pub:mlb-777001'))));
+
+  // MLB mati: build tetap sukses, kegagalan tercatat dan terlihat di log
+  const logs2 = [];
+  const r2 = await buildPages(buildOpts(tmp('pub2'), tmp('pub2state'), { fetchImpl: routeFetch3(fakeEspnSite({ now: T0 }), mkPub({ failMlb: true }), fakeTsdb({ now: T0 })), log: (...a) => logs2.push(a.join(' ')) }));
+  assert.equal(r2.outcome, 'fresh');
+  const m2 = readJ(r2.outDir, 'data/meta.json');
+  assert.equal(m2.sources.public.mlb.ok, false);
+  assert.equal(m2.sources.public.nhl.ok, true);
+  assert.ok(logs2.some((l) => /mlb GAGAL/.test(l)));
+  assert.ok(!readJ(r2.outDir, 'data/matches.json').matches.some((m) => m.id.startsWith('pub:mlb:')));
+});
+
+/* ------------------------------------------------------------------ build auto + statistik lengkap */
+
+test('build auto: statistik lengkap masuk bundel laga; laga selesai tidak diminta ulang; kegagalan tercatat, bukan fatal', async () => {
+  const summary = (id) => ({
+    header: { competitions: [{ competitors: [{ homeAway: 'home', team: { id: `h${id}` } }, { homeAway: 'away', team: { id: `a${id}` } }] }] },
+    boxscore: { teams: [
+      { team: { id: `h${id}` }, homeAway: 'home', statistics: [{ name: 'totalShots', displayValue: '11' }, { name: 'possessionPct', displayValue: '60' }] },
+      { team: { id: `a${id}` }, homeAway: 'away', statistics: [{ name: 'totalShots', displayValue: '7' }, { name: 'possessionPct', displayValue: '40' }] },
+    ] },
+    keyEvents: [{ type: { text: 'Goal' }, scoringPlay: true, team: { id: `h${id}` }, clock: { displayValue: "10'" }, participants: [{ athlete: { displayName: 'Pemain Uji' } }] }],
+  });
+  const asked = [];
+  const wrap = (inner, { failSummary = false } = {}) => async (url, init) => {
+    const u = String(url);
+    const m = /\/summary\?event=([0-9]+)$/.exec(u);
+    if (m) { asked.push(m[1]); return failSummary ? new Response('x', { status: 500 }) : new Response(JSON.stringify(summary(m[1]))); }
+    return inner(url, init);
+  };
+  const state = tmp('statsstate');
+  const mk = (over = {}) => buildOpts(tmp('stats'), state, over);
+  const espn = fakeEspnSite({ now: T0 });
+  const pub = async () => new Response('[]');
+  const logs = [];
+  const r = await buildPages(mk({ fetchImpl: wrap(routeFetch3(espn, pub, fakeTsdb({ now: T0 }))), log: (...a) => logs.push(a.join(' ')), statsMax: 15 }));
+  assert.equal(r.outcome, 'fresh');
+  const snap = readJ(r.outDir, 'data/matches.json');
+  const withStats = snap.matches.filter((m) => m.id.startsWith('espn:') && ['live', 'finished'].includes(m.status)).map((m) => ({ m, b: readJ(r.outDir, 'data', matchFile(m.id)) })).filter((x) => x.b.match.stats?.length);
+  assert.ok(withStats.length >= 5 && withStats.length <= 15, `bundel ber-statistik: ${withStats.length}`);
+  const { b } = withStats[0];
+  assert.deepEqual(b.match.stats.map((s) => [s.label, s.home, s.away]), [['Tembakan', 11, 7], ['Penguasaan bola', 60, 40]]);
+  assert.equal(b.match.events[0].player, 'Pemain Uji');
+  assert.ok(!snap.matches.some((m) => m.stats || m.events?.length), 'daftar laga tetap ringan: statistik hanya di bundel');
+  const meta = readJ(r.outDir, 'data/meta.json');
+  assert.equal(meta.sources.stats.fetched, asked.length);
+  assert.ok(meta.sources.stats.skippedByCap > 0 && meta.sources.stats.withData === withStats.length);
+  assert.ok(logs.some((l) => /Statistik laga: \d+ berisi/.test(l)));
+
+  // build berikutnya: yang selesai dan sudah tersimpan tidak diminta lagi
+  const before = new Set(asked);
+  asked.length = 0;
+  await buildPages(mk({ fetchImpl: wrap(routeFetch3(espn, pub, fakeTsdb({ now: T0 }))), now: () => T0 + 600_000, statsMax: 15 }));
+  const finishedIds = new Set(snap.matches.filter((m) => m.status === 'finished').map((m) => m.espnId));
+  assert.ok(![...before].filter((id) => finishedIds.has(id)).some((id) => asked.includes(id)), 'laga selesai bersimpanan tidak diambil ulang');
+
+  // endpoint statistik mati: build tetap sukses, kegagalan tercatat
+  const r3 = await buildPages(buildOpts(tmp('stats3'), tmp('stats3s'), { fetchImpl: wrap(routeFetch3(espn, pub, fakeTsdb({ now: T0 })), { failSummary: true }), statsMax: 6 }));
+  assert.equal(r3.outcome, 'fresh');
+  const m3 = readJ(r3.outDir, 'data/meta.json');
+  assert.equal(m3.sources.stats.withData, 0);
+  assert.ok(m3.sources.stats.errors.length > 0 && /HTTP 500/.test(m3.sources.stats.errors[0].error));
 });

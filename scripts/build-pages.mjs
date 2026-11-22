@@ -19,10 +19,13 @@ import { createApp, CSP } from '../server/app.js';
 import { ENDPOINTS as ESPN_LEAGUES, ESPN_ORIGIN } from '../public/js/static/espn.js';
 import { createTsdbProvider } from '../server/providers/thesportsdb.js';
 import { createEspnProvider } from '../server/providers/espn.js';
+import { createPublicProvider } from '../server/providers/publicapis.js';
+import { createStatsProvider } from '../server/providers/matchstats.js';
 import { createCompositeProvider } from '../server/providers/composite.js';
 import { SPORTS, publicSport } from '../server/sports.js';
 import { DISCLAIMER } from '../server/ai/explainer.js';
 import { matchFile } from '../public/js/static/paths.js';
+import { cleanProxyUrl } from '../public/js/static/proxy.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HOUR = 3_600_000;
@@ -133,7 +136,44 @@ export function makeFetch({ fetchImpl = globalThis.fetch, cacheFile = null, now 
 
 const rank = { live: 0, upcoming: 1, finished: 2 };
 
-async function collect(app, t, { maxBundles }) {
+/**
+ * Statistik lengkap per laga (ESPN ringkasan, boxscore MLB/NHL). Laga live diambil ulang tiap build; laga selesai diambil sekali lalu
+ * disimpan di stateDir/stats-cache.json (hasil akhir tidak berubah). Kegagalan satu laga tidak menggagalkan yang lain, dan jumlah
+ * permintaan jaringan per build dibatasi oleh `max` supaya build pertama tidak menghujani sumbernya.
+ * @returns {Promise<{ patches: Map<string, object>, report: object }>}
+ */
+export async function enrichStats(matches, { provider, cacheFile, now = () => Date.now(), max = 60, log = () => {} }) {
+  const cache = cacheFile ? readJson(cacheFile, {}) : {};
+  const t = now();
+  const patches = new Map();
+  const rep = { candidates: 0, fromCache: 0, fetched: 0, withData: 0, skippedByCap: 0 };
+  const order = (a, b) => (a.status === 'live' ? 0 : 1) - (b.status === 'live' ? 0 : 1) || Date.parse(b.kickoff) - Date.parse(a.kickoff);
+  const todo = matches.filter((m) => provider.supports(m)).sort(order);
+  rep.candidates = todo.length;
+  let used = 0;
+  for (const m of todo) {
+    const hit = cache[m.id];
+    const fresh = hit && m.status === 'finished' && (!hit.empty || t - hit.at < 6 * HOUR);
+    if (fresh) { rep.fromCache++; if (!hit.empty) patches.set(m.id, hit.d); continue; }
+    if (used >= max) { rep.skippedByCap++; if (hit && !hit.empty) patches.set(m.id, hit.d); continue; }
+    used++;
+    let d = null;
+    try { d = await provider.fetchFor(m); } catch (e) { log(`statistik ${m.id}: ${e?.message || e}`); }
+    rep.fetched++;
+    if (d) {
+      const has = d.stats.length || d.events.length || d.leaders.length;
+      if (has) { patches.set(m.id, d); rep.withData++; }
+      if (m.status === 'finished') cache[m.id] = { at: t, d: has ? d : null, empty: !has };
+    } else if (hit && !hit.empty) patches.set(m.id, hit.d); // gagal sekarang: pakai salinan lama
+  }
+  if (cacheFile) {
+    const keep = Object.entries(cache).filter(([, v]) => t - v.at < 30 * DAY).sort((a, b) => b[1].at - a[1].at).slice(0, 800);
+    writeJson(cacheFile, Object.fromEntries(keep));
+  }
+  return { patches, report: rep };
+}
+
+async function collect(app, t, { maxBundles, enrich = null }) {
   const { service, history } = app;
   const from = t - WINDOW.before;
   const to = t + WINDOW.after;
@@ -147,6 +187,7 @@ async function collect(app, t, { maxBundles }) {
   const keptIds = new Set(kept.map((m) => m.id));
   const rawById = new Map(raw.map((m) => [m.id, m]));
 
+  const extra = enrich ? await enrich(kept.map((m) => rawById.get(m.id)).filter(Boolean)) : null;
   const files = new Map();
   const seenFiles = new Set();
   for (const m of kept) {
@@ -156,7 +197,8 @@ async function collect(app, t, { maxBundles }) {
     seenFiles.add(f);
     const src = rawById.get(m.id);
     if (!src) continue;
-    files.set(f, service.bundleOf(src));
+    const patch = extra?.patches.get(m.id);
+    files.set(f, service.bundleOf(patch ? { ...src, stats: patch.stats?.length ? patch.stats : src.stats, events: patch.events?.length ? patch.events : src.events, leaders: patch.leaders?.length ? patch.leaders : undefined } : src));
   }
   const matches = kept.filter((m) => files.has(matchFile(m.id)));
 
@@ -169,10 +211,10 @@ async function collect(app, t, { maxBundles }) {
   const src = demo ? 'demo' : 'real';
   const record = { demo, all: history.modelRecord(null, src), sports: Object.fromEntries(SPORTS.map((s) => [s.id, history.modelRecord(s.id, src)])) };
 
-  return { matches, meta, files, results, record, health, demo };
+  return { matches, meta, files, results, record, health, demo, statsReport: extra?.report || null };
 }
 
-function writeData(dataDir, t, snap, { provider, stale = false, lastError = null, fallbackActive = false, sources = null }) {
+function writeData(dataDir, t, snap, { provider, stale = false, lastError = null, fallbackActive = false, sources = null, liveUrl = null }) {
   const builtAt = new Date(t).toISOString();
   const demo = snap.demo;
   const dir = (f) => path.join(dataDir, f);
@@ -181,6 +223,7 @@ function writeData(dataDir, t, snap, { provider, stale = false, lastError = null
 
   writeJson(dir('config.json'), {
     name: 'JonBet', demo, provider, fallbackActive, ai: 'builtin',
+    ...(liveUrl ? { liveUrl } : {}),
     sports: SPORTS.map(publicSport), disclaimer: DISCLAIMER,
   });
   writeJson(dir('meta.json'), {
@@ -208,6 +251,14 @@ function markStale(dataDir, lastError, t) {
   if (m) writeJson(mf, { ...m, meta: { ...m.meta, stale: true } });
 }
 
+function setLiveUrl(dataDir, liveUrl) {
+  const f = path.join(dataDir, 'config.json');
+  const cfg = readJson(f);
+  if (!cfg) return;
+  const { liveUrl: _old, ...rest } = cfg;
+  writeJson(f, liveUrl ? { ...rest, liveUrl } : rest);
+}
+
 /* ------------------------------------------------------------------ situs */
 
 function listFiles(dir) {
@@ -219,9 +270,9 @@ function listFiles(dir) {
   return out.sort();
 }
 
-export const SHARED_FILES = ['util.js', 'sports.js', 'ai/explainer.js', 'ai/llm.js', 'model/model.js'];
+export const SHARED_FILES = ['util.js', 'sports.js', 'ai/explainer.js', 'ai/llm.js', 'ai/assistant.js', 'model/model.js'];
 
-function copySite(outDir) {
+function copySite(outDir, liveUrl = null) {
   fs.cpSync(path.join(ROOT, 'public'), outDir, { recursive: true });
   // Kode yang sama dipakai server dan browser (penjelasan AI, model, daftar cabang); satu sumber kebenaran.
   const shared = path.join(outDir, 'js', 'shared');
@@ -242,10 +293,11 @@ function copySite(outDir) {
 
   // GitHub Pages tidak bisa memasang header, jadi CSP dan penanda mode dipasang lewat <meta>.
   // frame-ancestors tidak berlaku lewat <meta> (diabaikan browser dengan peringatan), jadi dibuang.
-  // connect-src ditambah asal yang dipanggil dari browser: skor langsung (ESPN) dan, hanya bila pengguna memasukkan kunci sendiri, api.anthropic.com.
+  // connect-src ditambah asal yang dipanggil dari browser: skor langsung (ESPN), proxy skor milik sendiri (bila JONBET_LIVE_URL diisi) dan,
+  // hanya bila pengguna memasukkan kunci sendiri, api.anthropic.com.
   const csp = CSP.split('; ')
     .filter((d) => !d.startsWith('frame-ancestors'))
-    .map((d) => (d.startsWith('connect-src ') ? `${d} ${ESPN_ORIGIN} https://api.anthropic.com` : d))
+    .map((d) => (d.startsWith('connect-src ') ? `${d} ${ESPN_ORIGIN} https://api.anthropic.com${liveUrl ? ` ${new URL(liveUrl).origin}` : ''}` : d))
     .join('; ');
   const idx = path.join(outDir, 'index.html');
   const html = fs.readFileSync(idx, 'utf8');
@@ -273,9 +325,11 @@ export async function buildPages({
   retryDelayMs,
   sleep,
   maxBundles = 1500,
+  statsMax = 60, // batas permintaan statistik per build (live didahulukan, lalu hasil terbaru)
   backfillDays = 14,
   espnBackfillChunks = 4, // x 15 hari = 60 hari riwayat hasil dari ESPN (satu permintaan per liga per potongan)
   backfillBudgetMs = 8 * 60_000,
+  liveUrl: liveUrlRaw = null,
 } = {}) {
   if (!['auto', 'espn', 'thesportsdb', 'demo'].includes(provider)) throw new Error(`Sumber data tidak dikenal: "${provider}" (pilihan: auto, espn, thesportsdb, demo)`);
   outDir = path.resolve(outDir);
@@ -284,7 +338,10 @@ export async function buildPages({
   fs.rmSync(outDir, { recursive: true, force: true });
   fs.mkdirSync(outDir, { recursive: true });
   fs.mkdirSync(stateDir, { recursive: true });
-  const version = copySite(outDir);
+  const liveUrl = cleanProxyUrl(liveUrlRaw);
+  if (liveUrlRaw && !liveUrl) log(`::warning title=JonBet::JONBET_LIVE_URL diabaikan: harus alamat https yang sah (tanpa nama pengguna/kata sandi), diterima: ${String(liveUrlRaw).slice(0, 80)}`);
+  if (liveUrl) log(`Proxy skor langsung: ${new URL(liveUrl).origin} (kuncinya tidak ada di situs; hanya alamatnya).`);
+  const version = copySite(outDir, liveUrl);
   const dataDir = path.join(outDir, 'data');
   const lastDir = path.join(stateDir, 'last-data');
   const t = now();
@@ -294,7 +351,7 @@ export async function buildPages({
     const app = createApp({ dbPath: ':memory:', provider: 'demo', now, log: () => {} });
     try {
       const snap = await collect(app, t, { maxBundles });
-      writeData(dataDir, t, snap, { provider: 'demo' });
+      writeData(dataDir, t, snap, { provider: 'demo', liveUrl });
     } finally { await app.close(); }
     log(`Build demo selesai: ${fs.readdirSync(path.join(dataDir, 'm')).length} pertandingan.`);
     return { outDir, outcome: 'fresh', matches: fs.readdirSync(path.join(dataDir, 'm')).length, version };
@@ -303,15 +360,26 @@ export async function buildPages({
   /* ---- data nyata ---- */
   const tsdbStats = {};
   const espnStats = {};
+  const publicStats = {};
+  const statsStats = {};
   const tsdbFetch = makeFetch({ fetchImpl, cacheFile: path.join(stateDir, 'http-cache.json'), now, gapMs: gapMs ?? (FREE_KEYS.has(String(key)) ? 2200 : 0), retryDelayMs, sleep, stats: tsdbStats });
   // ESPN tidak dibatasi seketat kunci gratis TheSportsDB: jeda pendek, coba ulang sekali, tanpa cache disk (respons besar dan cepat basi).
   const espnFetch = makeFetch({ fetchImpl, cacheFile: path.join(stateDir, 'espn-cache.json'), now, gapMs: espnGapMs ?? gapMs ?? 120, retries: 1, retryDelayMs: retryDelayMs ?? 1500, sleep, stats: espnStats, ttlRule: espnTtlRule, emptyTtl: 2 * HOUR });
   const tsdb = createTsdbProvider({ key, fetchImpl: tsdbFetch, now, perMinute: 1e9, timeoutMs: 20_000 });
   const espn = createEspnProvider({ fetchImpl: espnFetch, now, timeoutMs: 20_000, log: (...a) => log('[espn]', ...a) });
-  const primary = provider === 'thesportsdb' ? tsdb : provider === 'espn' ? espn : createCompositeProvider({ primary: espn, secondary: tsdb, log: (...a) => log('[sumber]', ...a) });
+  // API publik tanpa kunci (OpenLigaDB, MLB, NHL): lapisan antara ESPN dan TheSportsDB. Tanpa cache disk (responsnya kecil dan harus segar).
+  const publicFetch = makeFetch({ fetchImpl, now, gapMs: espnGapMs ?? gapMs ?? 120, retries: 1, retryDelayMs: retryDelayMs ?? 1500, sleep, stats: publicStats, ttlRule: () => 0 });
+  const publicApis = createPublicProvider({ fetchImpl: publicFetch, now, timeoutMs: 20_000, log: (...a) => log('[publik]', ...a) });
+  const primary = provider === 'thesportsdb' ? tsdb : provider === 'espn' ? espn
+    : createCompositeProvider({ primary: espn, secondary: createCompositeProvider({ primary: publicApis, secondary: tsdb, log: (...a) => log('[sumber]', ...a) }), log: (...a) => log('[sumber]', ...a) });
+  // Statistik lengkap per laga (hanya mode data nyata). Tanpa cache respons; hasil akhir laga selesai disimpan ringkas di stateDir.
+  const statsFetch = makeFetch({ fetchImpl, now, gapMs: espnGapMs ?? gapMs ?? 120, retries: 1, retryDelayMs: retryDelayMs ?? 1500, sleep, stats: statsStats, ttlRule: () => 0 });
+  const matchStats = createStatsProvider({ fetchImpl: statsFetch, timeoutMs: 20_000, log: (...a) => log('[statistik]', ...a) });
+  const enrich = (list) => enrichStats(list, { provider: matchStats, cacheFile: path.join(stateDir, 'stats-cache.json'), now, max: statsMax, log: (...a) => log('[statistik]', ...a) });
   let upstream = null; // alasan asli kegagalan sumber (pesan HTTP 502 ke pengguna sengaja umum)
   const app = createApp({ dbPath: path.join(stateDir, 'jonbet.db'), provider, fallbackDemo: false, primaryProvider: primary, now, log: (...a) => { if (a[0] === 'sumber data gagal:') upstream = String(a[1]); log('[sumber]', ...a); } });
-  const used = provider === 'thesportsdb' ? [tsdbStats] : provider === 'espn' ? [espnStats] : [tsdbStats, espnStats];
+  const used = provider === 'thesportsdb' ? [tsdbStats] : provider === 'espn' ? [espnStats] : [tsdbStats, espnStats, publicStats];
+  // statsStats sengaja tidak masuk `used`: kegagalan statistik tidak boleh dianggap sumber data utama mati.
   const sum = (k) => used.reduce((n, x) => n + (x[k] || 0), 0);
 
   let error = null;
@@ -344,16 +412,18 @@ export async function buildPages({
       }
     }
 
-    const snap = await collect(app, t, { maxBundles });
+    const snap = await collect(app, t, { maxBundles, enrich });
     // Jika setiap permintaan nyata gagal, data yang terkumpul hanya dari cache lama: jangan tampilkan sebagai data baru.
     if (sum('network') > 0 && sum('ok') === 0) throw new Error(`Sumber data tidak merespons (${sum('failed')} permintaan gagal)`);
     const rep = espn.report;
     const sources = {
       mode: provider,
       ...(provider !== 'thesportsdb' ? { espn: rep ? { leagues: rep.tried, ok: rep.ok, events: rep.events, failed: rep.failed.slice(0, 20).map((f) => f.path), rangeSuspect: rep.rangeSuspect, mode: rep.mode } : null } : {}),
+      ...(snap.statsReport ? { stats: { ...snap.statsReport, requests: statsStats.network, failed: statsStats.failed, bySource: matchStats.report.bySource, errors: matchStats.report.failed.slice(0, 5) } } : {}),
+      ...(provider === 'auto' ? { public: publicApis.report ? { ...publicApis.report.sources, requests: publicStats.network, failed: publicStats.failed } : null } : {}),
       ...(provider !== 'espn' ? { thesportsdb: { requests: tsdbStats.network, cached: tsdbStats.cached, failed: tsdbStats.failed, rejected: tsdbStats.rejected || 0, ok: tsdbStats.ok } } : {}),
     };
-    writeData(dataDir, t, snap, { provider, sources });
+    writeData(dataDir, t, snap, { provider, sources, liveUrl });
     fs.rmSync(lastDir, { recursive: true, force: true });
     fs.cpSync(dataDir, lastDir, { recursive: true });
     const bySource = snap.matches.reduce((o, m) => { o[m.source] = (o[m.source] || 0) + 1; return o; }, {});
@@ -362,6 +432,8 @@ export async function buildPages({
     if (rep?.mode && rep.mode !== 'range') log(`ESPN: memakai mode permintaan "${rep.mode}" (bentuk rentang tanggal ditolak ESPN).`);
     if (rep?.rangeSuspect) log(`ESPN: ${rep.rangeSuspect} liga tampaknya mengabaikan rentang tanggal (hanya satu hari yang kembali); diambil per hari.`);
     if (provider !== 'espn' && (tsdbStats.rejected || 0) > 0) log(`TheSportsDB: ${tsdbStats.rejected} dari ${tsdbStats.network} permintaan ditolak (bukan 2xx, mis. HTTP 403); ${tsdbStats.ok || 0} berhasil. Cabang di luar ESPN akan tipis atau kosong.`);
+    if (snap.statsReport) { const r = snap.statsReport; log(`Statistik laga: ${r.withData} berisi dari ${r.candidates} kandidat (${r.fetched} diambil, ${r.fromCache} dari cache${r.skippedByCap ? `, ${r.skippedByCap} ditunda batas ${statsMax}` : ''}); ${matchStats.report.failed.length} gagal.`); }
+    if (provider === 'auto' && publicApis.report) log(`API publik: ${Object.entries(publicApis.report.sources).map(([k, v]) => (v.ok ? `${k} ${v.events} laga` : `${k} GAGAL (${v.error})`)).join(', ')}.`);
     log(`Permintaan: ${sum('network')} jaringan, ${sum('cached')} dari cache, ${sum('failed')} gagal (${sum('fallback')} dipulihkan dari cache lama).`);
   } catch (err) {
     error = err;
@@ -382,6 +454,7 @@ export async function buildPages({
     fs.rmSync(dataDir, { recursive: true, force: true });
     fs.cpSync(lastDir, dataDir, { recursive: true });
     markStale(dataDir, msg, t);
+    setLiveUrl(dataDir, liveUrl); // data lama tetap, tetapi alamat proxy mengikuti pengaturan sekarang (CSP juga dibuat dari pengaturan sekarang)
     log('Memakai data terakhir yang berhasil (ditandai tertunda).');
     return { outDir, outcome: 'stale', matches: fs.readdirSync(path.join(dataDir, 'm')).length, version, error: msg };
   }
@@ -389,7 +462,7 @@ export async function buildPages({
   const demoApp = createApp({ dbPath: ':memory:', provider: 'demo', now, log: () => {} });
   try {
     const snap = await collect(demoApp, t, { maxBundles });
-    writeData(dataDir, t, snap, { provider, fallbackActive: true, lastError: msg.slice(0, 500) });
+    writeData(dataDir, t, snap, { provider, fallbackActive: true, lastError: msg.slice(0, 500), liveUrl });
   } finally { await demoApp.close(); }
   log('Belum ada data lama: memakai data simulasi (ditandai jelas di aplikasi).');
   return { outDir, outcome: 'demo', matches: fs.readdirSync(path.join(dataDir, 'm')).length, version, error: msg };
@@ -404,6 +477,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     stateDir: arg('state', process.env.STATE_DIR || path.join(ROOT, '.pages-state')),
     provider: (arg('provider', process.env.PROVIDER || 'auto')).toLowerCase(),
     key: process.env.THESPORTSDB_KEY || '3',
+    liveUrl: process.env.JONBET_LIVE_URL || null,
   });
   if (result.outcome !== 'fresh') console.log(`::warning title=JonBet::Build memakai ${result.outcome === 'stale' ? 'data lama (tertunda)' : 'data simulasi'}: ${result.error}`);
   console.log(`Selesai (${result.outcome}), ${result.matches} pertandingan, versi ${result.version}.`);

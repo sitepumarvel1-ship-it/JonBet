@@ -31,18 +31,19 @@ Kalau suatu saat butuh komunitas bersama sungguhan (akun, tebakan terlihat semua
 
 ## Sumber data: dari mana liga, tim, dan skornya
 
-Tidak ada data fiktif kecuali bila kamu sengaja memilih `demo`, atau bila build pertama gagal total (lihat di bawah). Mode bawaan `auto` memakai dua sumber:
+Tidak ada data fiktif kecuali bila kamu sengaja memilih `demo`, atau bila build pertama gagal total (lihat di bawah). Mode bawaan `auto` memakai tiga lapis sumber (urutan prioritas ESPN, API publik, TheSportsDB):
 
 | Sumber | Dipakai untuk | Catatan |
 |---|---|---|
 | **ESPN** (papan skor publik, tidak resmi) | Sepak bola di liga-liga besar dunia, basket (NBA, WNBA, NCAA), football Amerika (NFL, NCAA, CFL), baseball (MLB), hoki es (NHL): jadwal, hasil, status live | Satu permintaan per liga per build mengambil seluruh rentang tanggal, jadi datanya lengkap. Tersedia tanpa kunci |
+| **API publik tanpa kunci** (OpenLigaDB, MLB Stats API, NHL) | Bundesliga 1-3 dan DFB-Pokal (OpenLigaDB), baseball MLB, hoki es NHL | Lapisan pelengkap dan cadangan: menambah laga yang tidak ada di ESPN dan menggantikan ESPN bila ESPN gagal untuk liga itu. Tanpa kunci. Tiap sumber berdiri sendiri: satu mati tidak menggagalkan yang lain, dan statusnya tercatat di `meta.json` (`sources.public`). Sebagian besar liga ini juga ada di ESPN, jadi manfaat utamanya ketahanan, bukan banyak laga baru |
 | **TheSportsDB** | Cabang yang tidak dicakup ESPN (tenis, bulu tangkis, voli, esports, MMA, rugby, futsal) dan liga sepak bola yang tidak ada di ESPN | Hasil kontribusi komunitas. Kunci gratis dibatasi: menurut dokumentasi pihak ketiga hanya sekitar 5 laga per hari per liga, jadi datanya tipis. Kunci premium membukanya penuh |
 
-Laga yang sama dari kedua sumber hanya tampil sekali (versi ESPN dipakai). Bila satu sumber gagal, yang lain tetap dipakai; bila keduanya gagal, situs memakai data terakhir yang berhasil ("Data tertunda").
+Laga yang sama dari beberapa sumber hanya tampil sekali (versi sumber berprioritas lebih tinggi dipakai). Bila satu sumber gagal, yang lain tetap dipakai; bila semuanya gagal, situs memakai data terakhir yang berhasil ("Data tertunda").
 
 **Prediksi** dihitung dari rating Elo yang dibangun dari hasil nyata: build pertama mengambil ±60 hari hasil ESPN (sekitar 200 permintaan satu kali saja), lalu rating terus belajar tiap build. Model hanya memakai hasil historis, jadi tim yang jarang terlihat punya skor keyakinan rendah. Ini perkiraan statistik, bukan jaminan, dan akurasinya baru bisa dinilai setelah beberapa minggu berjalan (lihat "Rekam jejak model" di halaman Cara kerja).
 
-**Cara memeriksa sumber mana yang bekerja** (tanpa membaca log): buka `https://USERNAME.github.io/jonbet/data/meta.json`. Bagian `sources` memuat jumlah liga ESPN yang merespons (`espn.ok` dari `espn.leagues`), daftar liga yang gagal (`espn.failed`), dan jumlah permintaan TheSportsDB. Log build di tab Actions memuat ringkasan yang sama ("ESPN: N dari M liga merespons").
+**Cara memeriksa sumber mana yang bekerja** (tanpa membaca log): buka `https://USERNAME.github.io/jonbet/data/meta.json`. Bagian `sources` memuat jumlah liga ESPN yang merespons (`espn.ok` dari `espn.leagues`), daftar liga yang gagal (`espn.failed`), jumlah laga dan status tiap API publik (`public.openligadb`, `public.mlb`, `public.nhl`: `ok` atau pesan galat), dan jumlah permintaan TheSportsDB. Log build di tab Actions memuat ringkasan yang sama ("ESPN: N dari M liga merespons").
 
 Yang perlu kamu tahu:
 
@@ -63,7 +64,7 @@ GitHub Actions tidak bisa lebih cepat dari 5 menit dan sering telat, jadi skor l
 
 **Liga yang dicoba**: sepak bola (Liga Inggris divisi 1 sampai 4, Piala FA dan Piala Liga, Spanyol, Jerman, Italia, Prancis, Belanda, Portugal, Skotlandia, Turki, Belgia, Brasil, Argentina, Meksiko, MLS, Liga Champions, Europa, Conference, Indonesia, Australia, Jepang, Arab Saudi), basket (NBA, WNBA, NCAA), football Amerika (NFL, NCAA, CFL), baseball (MLB), hoki es (NHL). Sepak bola di liga lain dicoba lewat papan skor umum ESPN, yang belum pasti tersedia. Daftarnya ada di `public/js/static/espn.js` dan mudah ditambah.
 
-**Tidak tercakup**: tenis, bulu tangkis, voli, esports, MMA, rugby, futsal, dan liga yang tidak dikenal ESPN. Untuk itu skornya tetap dari data jadwal.
+**Tidak tercakup**: tenis, bulu tangkis, voli, esports, MMA, rugby, futsal, dan liga yang tidak dikenal ESPN. Untuk itu skornya tetap dari data jadwal, kecuali kamu memasang proxy penyedia berlisensi (bagian berikutnya).
 
 Yang perlu kamu tahu:
 
@@ -71,6 +72,52 @@ Yang perlu kamu tahu:
 - **Privasi:** browser pengunjung menghubungi `site.api.espn.com` langsung, jadi ESPN bisa melihat alamat IP pengunjung. Tidak ada kuki atau kunci yang dikirim. Karena itu alamat itu ditambahkan ke `connect-src` pada kebijakan keamanan situs, dan hanya itu.
 - **Belum teruji ke ESPN sungguhan.** Lingkungan pengembangan saya tidak punya akses internet, jadi pencocokan dan pembacaan diuji dengan respons tiruan yang saya tulis mengikuti bentuk JSON publik ESPN. Slug liga yang salah atau bentuk respons yang berbeda akan tampil sebagai "laga ini belum tersedia di sumber langsung", bukan galat. Setelah dipasang, buka satu laga live dan lihat keterangannya.
 - **Tiap pengunjung menghubungi ESPN sendiri-sendiri**, jadi beban tidak tertumpu di satu tempat, tetapi juga tidak ada cache bersama. Permintaan dibatasi (maksimal 6 liga per putaran, jeda bertahap bila gagal).
+
+## Skor langsung dari server lain (opsional: proxy Cloudflare Workers + penyedia berlisensi)
+
+ESPN gratis tetapi tidak resmi, dan tidak mencakup tenis, bulu tangkis, voli, esports, MMA, rugby, futsal, serta liga kecil. Bila kamu mau skor live dari **penyedia data berlisensi**, kuncinya tidak boleh ditaruh di situs (GitHub Pages itu publik: siapa pun bisa membacanya). Solusinya sebuah **proxy kecil di Cloudflare Workers** (ada paket gratis, tanpa kartu kredit untuk memulai):
+
+```
+browser pengunjung --(tiap ±20 dtk)--> proxy Cloudflare --(cache 15 dtk)--> penyedia berlisensi
+                                       ^ kunci tersimpan di sini sebagai secret
+```
+
+- Kunci hanya ada di Cloudflare. Situs hanya tahu **alamat** proxy (`data/config.json`, `liveUrl`).
+- Cache 15 detik di proxy: 1 pengunjung atau 1.000 pengunjung memakai kuota penyedia yang sama (paling banyak satu panggilan per jendela cache).
+- Proxy hanya menjawab peramban dari situs kamu (CORS dikunci ke `ALLOWED_ORIGINS`); asal lain mendapat 403 tanpa menyentuh kuota.
+- Di browser, proxy **ditanya berdampingan dengan ESPN** dan, untuk laga yang dikenalnya, skornya yang dipakai. Laga yang tidak dikenal proxy tetap memakai ESPN, lalu data jadwal. Bila proxy mati atau menolak, situs tidak rusak: kembali ke ESPN, dengan jeda bertahap agar proxy tidak dihantam.
+- Di halaman laga tertulis sumbernya, mis. "Skor langsung dari API-Football".
+
+### Pilih penyedia
+
+| `LIVE_PROVIDER` | Cakupan | Catatan |
+|---|---|---|
+| `apifootball` | Sepak bola saja | API-Football (api-sports.io). Paket gratis dibatasi sekitar 100 permintaan per hari, cukup untuk mencoba tetapi tidak untuk situs yang dipakai seharian; periksa paket berbayarnya di situs mereka. |
+| `thesportsdb` | Banyak cabang | Livescore v2 TheSportsDB (paket premium, sekitar US$9 per bulan; diperbarui tiap ±2 menit di sumbernya). Bentuk responsnya paling sedikit terdokumentasi, jadi paling mungkin perlu penyesuaian. |
+
+Penyedia lain (Sportmonks, Goalserve, dan sejenisnya) bisa ditambahkan di `worker/live-proxy.js`: cukup satu fungsi yang mengubah responsnya ke bentuk `{id, sport, league, kickoff, home, away, hs, as, state, code, minute, period}` dan satu entri di `PROVIDERS`. Hitung kuota: dengan cache `CACHE_SECONDS` detik, panggilan ke penyedia paling banyak `86400 / CACHE_SECONDS` per hari bila situs selalu dibuka orang (15 detik = 5.760 per hari; 120 detik = 720 per hari). Atur `CACHE_SECONDS` (5 sampai 120) sesuai paket kamu.
+
+### Langkah pasang
+
+1. Daftar di penyedia pilihanmu dan salin **API key**-nya.
+2. Daftar di [dash.cloudflare.com](https://dash.cloudflare.com) (gratis). Buka **Workers & Pages**, klik **Create**, **Create Worker**, beri nama `jonbet-live`, klik **Deploy**.
+3. Klik **Edit code**. Hapus isi bawaan, tempel **seluruh isi** berkas `worker/live-proxy.js` dari repo ini, lalu **Deploy**.
+4. Buka **Settings, Variables and Secrets**, tambahkan tiga entri lalu **Deploy**:
+   - `LIVE_PROVIDER` (tipe **Text**): `apifootball` atau `thesportsdb`.
+   - `LIVE_API_KEY` (tipe **Secret**): kunci dari penyedia.
+   - `ALLOWED_ORIGINS` (tipe **Text**): asal situsmu **tanpa path**, mis. `https://NAMAKAMU.github.io`.
+5. Uji: buka `https://jonbet-live.AKUNKAMU.workers.dev/health`. Harus tampil `"configured":true`. Lalu buka `.../live` (dari peramban biasa tanpa asal, ini diizinkan untuk uji): harus tampil `"ok":true` dan daftar laga yang sedang berlangsung (kosong bila tidak ada yang live). Bila tampil galat, pesannya menyebut penyebabnya (mis. "HTTP 403" = kunci/paket salah) dan tidak pernah memuat kuncimu.
+6. Di repo GitHub: **Settings, Secrets and variables, Actions, tab Variables, New repository variable**. Nama `JONBET_LIVE_URL`, nilai `https://jonbet-live.AKUNKAMU.workers.dev/live`. Perbarui `.github/workflows/pages.yml` dari berkas terbaru (ada satu baris baru `JONBET_LIVE_URL`), lalu jalankan ulang alur kerja (**Actions, Run workflow**).
+7. Setelah hijau, buka `.../data/config.json`: harus ada `"liveUrl"`. Buka satu laga yang sedang live; keterangan di halamannya akan menyebut nama penyedia.
+
+### Yang perlu kamu tahu
+
+- **Belum diuji ke penyedia dan Cloudflare sungguhan.** Lingkungan pengembangan saya tidak punya akses internet. Pembacaan respons ditulis dari dokumentasi publik masing-masing penyedia dan diuji dengan contoh buatan sendiri; proxy diuji dengan penyedia tiruan. Bila bentuk respons aslinya berbeda, laga akan tetap tampil dari ESPN/data jadwal (bukan galat), dan langkah 5 akan memperlihatkannya. Kirimkan isi `/live` kepada saya bila hasilnya kosong padahal ada laga live, supaya pembacaannya bisa disesuaikan.
+- **Nama tim harus cocok.** Penyedia memakai nama sendiri; pencocokan memakai nama kedua tim dan jam mulai (dengan variasi umum seperti "Man City", "Wolves"). Bila ragu, laga itu tidak ditimpa.
+- **TheSportsDB dan IP GitHub:** build GitHub mendapat HTTP 403 dari TheSportsDB. Cloudflare Workers memakai jaringan berbeda, tetapi saya tidak bisa memastikannya dari sini; langkah 5 menjawabnya.
+- **Biaya dan kuota** (penyedia dan Cloudflare) ada di tangan akun kamu. Tiap pengunjung yang membuka situs dengan laga live memanggil proxy sekitar tiap 20 detik; periksa batas permintaan harian paket Workers gratis di dokumentasi Cloudflare.
+- **Pemakaian dan lisensi.** Periksa ketentuan penyedia untuk menampilkan datanya secara publik. JonBet tidak menampilkan odds atau fitur taruhan.
+- Ganti penyedia atau kunci kapan saja lewat Settings Worker, tanpa mengubah situs. Cabut atau hapus Worker bila tidak dipakai; situs kembali ke ESPN sendiri.
 
 ## Langkah demi langkah
 
@@ -111,6 +158,7 @@ Kalau build gagal mengambil data nyata, situs tetap terbit: memakai data terakhi
 Di repo: **Settings, Secrets and variables, Actions**.
 
 - **Secret `THESPORTSDB_KEY`**: kunci premium TheSportsDB (sekitar US$9 per bulan). Menambah skor live di data jadwal (yang diperbarui tiap 2 menit di sumbernya) untuk laga yang tidak tercakup ESPN. Tanpa ini dipakai kunci gratis. Kunci ini hanya dipakai di build dan tidak terkirim ke browser.
+- **Variable `JONBET_LIVE_URL`** (opsional): alamat proxy skor langsung Cloudflare Workers; lihat bagian "Skor langsung dari server lain".
 - **Variable `JONBET_PROVIDER`**: `auto` (bawaan, ESPN + TheSportsDB), `espn` (ESPN saja), `thesportsdb` (TheSportsDB saja), atau `demo` (data simulasi: liga dan tim fiktif, berguna untuk mencoba tampilan).
 
 ### 6. Pasang di ponsel
@@ -125,10 +173,37 @@ npm run preview:pages
 
 Membangun situs dengan data simulasi lalu membukanya di `http://localhost:8080/jonbet/`, persis seperti di github.io. Untuk data nyata: `PROVIDER=auto npm run preview:pages` (butuh internet, build pertama lama).
 
+## Statistik lengkap per laga
+
+Tab **Statistik** di halaman laga menampilkan perbandingan kedua tim, pemain kunci, serta gol dan kartu dengan nama pemain. Data diambil saat build dari sumber terbuka tanpa kunci:
+
+| Sumber | Isi |
+|---|---|
+| Ringkasan laga ESPN | Laga dari ESPN: penguasaan bola, tembakan, tembakan tepat sasaran, tendangan sudut, pelanggaran, kartu, akurasi umpan (sepak bola); rebound, assist, steal, dsb. (basket); first down, yard (football); pemain kunci; gol dan kartu |
+| Boxscore MLB Stats API | Pukulan, home run, RBI, walk, strikeout, dst. |
+| NHL (right-rail + landing) | Tembakan, faceoff, power play, hit, giveaway, dst.; gol per babak dengan nama pencetak |
+| OpenLigaDB | Gol dengan menit dan pencetak (sudah ada di data laga, tanpa permintaan tambahan) |
+
+Cara kerjanya: tiap build mengambil statistik laga yang live (selalu diambil ulang) dan laga selesai (sekali, lalu disimpan di cache build), maksimal 60 permintaan per build (live didahulukan, lalu hasil terbaru; sisanya menyusul di build berikutnya). Statistik masuk ke berkas data tiap laga, jadi browser tidak memanggil sumber lain dan CSP tidak berubah. Ringkasan hasilnya ada di `data/meta.json` bagian `sources.stats` (`candidates`, `fetched`, `withData`, `errors`) dan di log build ("Statistik laga: ...").
+
+Yang perlu kamu tahu:
+
+- **Tidak detik demi detik.** Statistik hanya segar sesering build (±5–10 menit); skor dan menit tetap live dari browser, statistiknya tidak.
+- **Cakupan tidak merata.** Liga kecil sering tidak punya statistik di ESPN; tabnya menampilkan "Sumber data belum menyediakan statistik" bukan angka karangan. Tenis, bulu tangkis, voli, esports, MMA, rugby, dan futsal (dari TheSportsDB) tidak punya statistik per laga di sini.
+- **Belum diuji ke layanan asli.** Bentuk respons ESPN, MLB, dan NHL ditulis dari pengetahuan publik dan diuji dengan respons tiruan. Pembacanya toleran (field yang tak dikenal dilewati), tetapi bila `sources.stats.withData` bernilai 0 padahal `candidates` banyak, kirim isi `errors` dari `meta.json`.
+- **Mengapa bukan Google atau LiveScore.** Google tidak punya API statistik pertandingan: panel skor di pencarian adalah data berlisensi, dan mengambilnya dengan scraping melanggar ketentuan layanan serta diblokir dari GitHub Actions dan browser (CORS). LiveScore juga tidak punya API publik; satu-satunya jalan yang ada adalah scraper pihak ketiga, yang berarti mengambil data tanpa izin. Statistik yang lebih kaya untuk sepak bola (susunan pemain, xG) bisa didapat dari penyedia berlisensi seperti API-Football lewat proxy Cloudflare yang sudah ada, dengan kunci milikmu sendiri.
+- Versi server (`npm start`) belum memuat statistik ini; hanya build GitHub Pages.
+
+## Tanya AI, ikuti laga, dan notifikasi
+
+- **Tanya AI** (tab di bilah bawah): pertanyaan lintas laga seperti "laga live sekarang", "hasil tadi malam", "laga paling ketat besok", "jadwal Arsenal", "pilihan model hari ini". Ia memahami cabang, liga, tim, dan jendela waktu (waktu Jakarta), dan mengingat konteks percakapan: "yang lain" melanjutkan daftar, "kalau tim tamu?" atau "bagaimana jika skor 2-1 menit 70?" dijawab dari model laga yang sedang dibahas. Ini mesin aturan dan statistik bawaan, **bukan model bahasa**: ia mengaku bila pertanyaannya di luar data (cedera, cuaca, berita). Tanpa kunci dan tanpa biaya; kunci Claude milik sendiri tetap opsional di halaman laga.
+- **Ikuti laga**: di halaman laga yang live atau akan datang ada kotak "Ikuti laga ini". Saat aplikasi terbuka, browser mengirim notifikasi lokal untuk kick-off, gol, dan peluit akhir, dan sumber skor tetap dipoll walau tab tersembunyi (lebih jarang, tiap ±60 detik). Opsi "Jaga layar tetap menyala" memakai Wake Lock bila browser mendukungnya.
+- **Batas yang jujur**: ini bukan push. Tidak ada server yang mengirim notifikasi ke ponsel yang tertutup, karena situs ini hanya GitHub Pages. Bila aplikasi atau tab ditutup, atau browser membekukan tab di latar belakang (umum di iOS dan ponsel hemat baterai), notifikasi berhenti sampai aplikasi dibuka lagi. Notifikasi sungguhan saat aplikasi tertutup butuh server push (Web Push dengan kunci VAPID), yang di luar cakupan versi tanpa server ini. Izin notifikasi baru diminta saat kamu menyalakannya.
+
 ## Batasan yang perlu kamu tahu
 
 - **Jadwal GitHub Actions tidak tepat waktu.** Pekerjaan terjadwal bisa tertunda belasan menit saat GitHub sibuk, dan kadang terlewat. Itu sebabnya skor live memakai ESPN langsung dari browser. Untuk laga yang tidak tercakup ESPN, jangan mengandalkan situs ini untuk skor detik demi detik.
-- **Skor langsung hanya jalan saat situs terbuka.** Browser hanya bertanya saat tab terlihat dan online. Menutup tab berarti berhenti; saat dibuka lagi, langsung menyegarkan.
+- **Skor langsung hanya jalan saat situs terbuka.** Menutup tab berarti berhenti; saat dibuka lagi, langsung menyegarkan. Tab yang tersembunyi tetap dipoll lebih jarang bila kamu mengikuti laga (lihat "Tanya AI, ikuti laga, dan notifikasi"), tetapi browser boleh membekukannya kapan saja.
 - **Dimatikan otomatis setelah 60 hari tanpa aktivitas.** Di repo publik, GitHub menonaktifkan alur kerja terjadwal bila tidak ada perubahan di repo selama 60 hari. Bila itu terjadi, buka tab Actions dan klik **Enable workflow**.
 - **Sumber data.** TheSportsDB adalah basis data hasil kontribusi komunitas; kunci gratisnya dibatasi sekitar 30 permintaan per menit dan jumlah laga per permintaan. Build memakai jeda dan cache agar tidak melampauinya, tetapi data TheSportsDB bisa terlambat atau kurang lengkap. Untuk liga yang ada di ESPN, datanya jauh lebih lengkap.
 - **Rating belajar dari state yang disimpan di cache GitHub Actions.** Bila cache hilang (misalnya repo tidak aktif lebih dari 7 hari), model mulai lagi dari awal dan mengisi ulang riwayat.

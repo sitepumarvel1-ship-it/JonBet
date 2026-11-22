@@ -7,10 +7,51 @@ import { CLAUDE_MODELS, clearClaude, getClaude, setClaude } from '../static/clau
 import { barList, compareRows, formPills, marginBars, meter, probBar, scoreHeatmap, totalsBars } from '../charts.js';
 import { clock, longWhen, num1, pctInt, untilKickoff } from '../format.js';
 import { setQuery } from '../router.js';
+import { disableNotifications, enableNotifications, isFollowing, permission, setFollow, setKeepAwake, settings, supported } from '../notify.js';
 
 const TABS = [['analisis', 'Analisis'], ['form', 'Form dan H2H'], ['statistik', 'Statistik'], ['komunitas', 'Komunitas'], ['ai', 'Tanya JonBet AI']];
 
 const panel = (title, ...children) => h('section', { class: 'card panel' }, h('h3', {}, title), ...children);
+
+/* ------------------------------------------------------------------ ikuti laga (notifikasi lokal) */
+
+function followBox(m) {
+  const btn = h('button', { class: 'btn btn-sm', type: 'button' });
+  const note = h('p', { class: 'follow-note' });
+  const awake = h('input', { type: 'checkbox', id: 'keep-awake' });
+  const awakeRow = h('label', { class: 'follow-awake', for: 'keep-awake' }, awake, h('span', {}, 'Jaga layar tetap menyala saat memantau'));
+  const box = h('div', { class: 'follow-box' }, btn, note, awakeRow);
+  const draw = () => {
+    const on = isFollowing(m.id);
+    const s = settings();
+    btn.textContent = on ? 'Berhenti mengikuti' : 'Ikuti laga ini';
+    btn.classList.toggle('btn-primary', !on);
+    btn.setAttribute('aria-pressed', String(on));
+    awakeRow.hidden = !on || !('wakeLock' in navigator);
+    awake.checked = !!s.awake;
+    if (!on) note.textContent = 'Dapatkan notifikasi gol, mulai, dan selesai selama JonBet terbuka.';
+    else if (!supported()) note.textContent = 'Diikuti, tetapi browser ini belum mendukung notifikasi. Di iPhone, tambahkan JonBet ke Layar Utama dulu.';
+    else if (permission() === 'denied') note.textContent = 'Diikuti, tetapi notifikasi diblokir di pengaturan browser untuk situs ini.';
+    else if (!s.on || permission() !== 'granted') note.textContent = 'Diikuti. Notifikasi belum aktif.';
+    else note.textContent = 'Notifikasi aktif. Muncul selama JonBet terbuka (tab boleh di latar belakang); menutup aplikasi menghentikannya.';
+  };
+  btn.addEventListener('click', async () => {
+    try {
+      if (isFollowing(m.id)) { setFollow(m.id, false); toast('Berhenti mengikuti laga ini.'); }
+      else {
+        setFollow(m.id, true);
+        if (!settings().on || permission() !== 'granted') {
+          try { await enableNotifications(); toast('Notifikasi aktif untuk laga yang kamu ikuti.'); }
+          catch (err) { toast(err.message, 'error'); }
+        } else toast('Laga ini diikuti.');
+      }
+    } catch (err) { toast(err.message, 'error'); }
+    draw();
+  });
+  awake.addEventListener('change', () => { setKeepAwake(awake.checked); draw(); });
+  draw(); // hero dibangun ulang tiap penyegaran, jadi keadaan selalu dibaca ulang dari penyimpanan
+  return box;
+}
 
 /* ------------------------------------------------------------------ hero */
 
@@ -35,7 +76,8 @@ function buildHero(b) {
       h('div', { class: 'hero-team' }, emblem(m.home, 'home', true), h('div', { class: 'name' }, m.home.name), h('div', { class: 'role' }, sport?.homeLabel || 'Tuan rumah')),
       center,
       h('div', { class: 'hero-team' }, emblem(m.away, 'away', true), h('div', { class: 'name' }, m.away.name), h('div', { class: 'role' }, sport?.awayLabel || 'Tamu'))),
-    liveNote(m));
+    liveNote(m),
+    STATIC && (m.status === 'live' || m.status === 'upcoming') ? followBox(m) : null);
 }
 
 /* -------------------------------------------------------------- analisis */
@@ -129,16 +171,31 @@ function formTab(b) {
 
 /* ------------------------------------------------------------ statistik */
 
+const EVENT_LABEL = { goal: 'Gol', yellow: 'Kartu kuning', red: 'Kartu merah' };
+
 function statsTab(b) {
   const { match: m } = b;
-  const ev = (m.events || []).filter((e) => e.type === 'goal');
-  return h('div', { class: 'grid-2' },
+  const hasStats = Array.isArray(m.stats) && m.stats.length > 0;
+  const ev = (m.events || []).filter((e) => EVENT_LABEL[e.type]);
+  const leaders = Array.isArray(m.leaders) ? m.leaders : [];
+  const side = (e) => (e.side === 'home' ? m.home.name : m.away.name);
+  const when = (e) => (e.clock ? String(e.clock) : e.minute != null ? `${e.minute}'` : '');
+  const left = [
     panel('Statistik pertandingan',
-      m.stats && m.stats.length ? compareRows(m.stats) : h('p', { class: 'muted' }, m.status === 'upcoming' ? 'Statistik tersedia setelah pertandingan dimulai.' : 'Sumber data belum menyediakan statistik untuk pertandingan ini.'),
-      m.stats && m.stats.length ? h('p', { class: 'sub' }, `Biru: ${m.home.name}. Amber: ${m.away.name}.`) : null),
+      hasStats ? compareRows(m.stats) : h('p', { class: 'muted' }, m.status === 'upcoming' ? 'Statistik tersedia setelah pertandingan dimulai.' : 'Sumber data belum menyediakan statistik untuk pertandingan ini.'),
+      hasStats ? h('p', { class: 'sub' }, `Biru: ${m.home.name}. Amber: ${m.away.name}. Diperbarui tiap build situs, tidak detik demi detik.`) : null),
+  ];
+  if (leaders.length) {
+    left.push(panel('Pemain kunci', h('div', { class: 'leaders' }, leaders.map((l) => h('div', { class: 'leader-row' },
+      h('span', { class: 'lc' }, l.label),
+      h('span', { class: 'lp' }, l.home ? `${l.home.player}${l.home.value ? ` (${l.home.value})` : ''}` : '-'),
+      h('span', { class: 'lp' }, l.away ? `${l.away.player}${l.away.value ? ` (${l.away.value})` : ''}` : '-'))))));
+  }
+  return h('div', { class: 'grid-2' },
+    h('div', { class: 'section' }, ...left),
     panel('Jalannya pertandingan',
-      ev.length ? h('div', { class: 'timeline' }, ev.map((e) => h('div', { class: 'tl' }, h('span', { class: 'm' }, `${e.minute}'`), h('span', {}, `Gol ${e.side === 'home' ? m.home.name : m.away.name}`))))
-        : h('p', { class: 'muted' }, m.status === 'upcoming' ? 'Belum dimulai.' : 'Belum ada gol tercatat.')));
+      ev.length ? h('div', { class: 'timeline' }, ev.map((e) => h('div', { class: 'tl' }, h('span', { class: 'm' }, when(e)), h('span', {}, `${EVENT_LABEL[e.type]} ${side(e)}${e.player ? `: ${e.player}` : ''}`))))
+        : h('p', { class: 'muted' }, m.status === 'upcoming' ? 'Belum dimulai.' : 'Belum ada kejadian tercatat.')));
 }
 
 /* ------------------------------------------------------------- komunitas */
@@ -280,6 +337,7 @@ function claudeBox(onChange) {
 
 function aiTab(getBundle, matchId) {
   const history = [];
+  let context = null; // konteks jawaban terakhir: pertanyaan lanjutan ("kalau tim tamu?") dipahami
   const log = h('div', { class: 'chat-log', role: 'log', 'aria-live': 'polite', 'aria-label': 'Percakapan dengan JonBet AI' });
   const sugg = h('div', { class: 'sugg' });
   const input = h('input', { class: 'input', type: 'text', maxlength: 500, placeholder: 'Tanya soal pertandingan ini…', 'aria-label': 'Pertanyaan untuk JonBet AI', autocomplete: 'off' });
@@ -306,7 +364,8 @@ function aiTab(getBundle, matchId) {
     const typing = bubble('ai', 'JonBet AI sedang menulis…');
     typing.classList.add('typing');
     try {
-      const r = await api(`/api/matches/${encodeURIComponent(matchId)}/ai`, { method: 'POST', body: { message: text, history: history.slice(-6) } });
+      const r = await api(`/api/matches/${encodeURIComponent(matchId)}/ai`, { method: 'POST', body: { message: text, history: history.slice(-6), context } });
+      context = r.context || null;
       typing.remove();
       bubble('ai', r.reply, r.source === 'claude' ? 'Dijawab oleh Claude dari data analisis' : r.degradedReason === 'kunci' ? 'Kunci Claude ditolak (periksa kunci atau saldo); memakai model bawaan JonBet' : r.degraded ? 'Model bawaan JonBet (Claude sedang tidak tersedia)' : 'Model bawaan JonBet');
       history.push({ role: 'user', content: text }, { role: 'assistant', content: r.reply });

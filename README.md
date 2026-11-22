@@ -17,7 +17,7 @@ Butuh Node.js 22.13 atau lebih baru. Tanpa dependensi npm.
 npm run preview:pages  # versi GitHub Pages, data simulasi: http://localhost:8080/jonbet/
 npm run demo           # versi server, data simulasi: http://localhost:3000
 npm start              # versi server, data nyata dari ESPN + TheSportsDB (lihat "Sumber data")
-npm test               # 153 tes: backend, model, keamanan, build Pages, sumber data ESPN, skor langsung, fuzz
+npm test               # 208 tes: backend, model, keamanan, build Pages, sumber data ESPN dan API publik, statistik laga, skor langsung, proxy skor, asisten AI, fuzz
 npm run check          # periksa sintaks semua berkas JS
 npm run test:ui        # uji browser versi server; butuh Google Chrome dan: npm i --no-save playwright-core
 npm run test:ui:static # uji browser versi GitHub Pages di subfolder /jonbet/
@@ -40,8 +40,12 @@ PWA hanya bisa dipasang lewat **HTTPS** (kecuali `localhost`). Setelah diterbitk
 - `.github/workflows/pages.yml`: tiap ±5 menit dan tiap push ke `main`, menjalankan `scripts/build-pages.mjs`: mengambil jadwal dan hasil, memperbarui rating Elo, menghitung analisis tiap laga, menulis berkas `data/*.json`, lalu menerbitkan ke GitHub Pages. State (database rating, cache permintaan, data terakhir) dibawa antar build lewat cache Actions.
 - Di browser: `public/js/static/` membaca berkas data itu, menyaring daftar laga, menjalankan JonBet AI (`server/ai/explainer.js` disalin ke build), dan menyimpan tebakan di `localStorage`. Mode statis aktif hanya bila `index.html` hasil build memuat `<meta name="jonbet-mode" content="static">`.
 - Skor langsung: `public/js/static/espn.js` (peta liga ke papan skor ESPN, pencocokan nama tim, jam/babak per cabang) dan `live.js` (pemantau: memilih laga, bertanya tiap ±20 detik hanya saat tab terlihat, mundur bertahap bila gagal, menimpa skor dan menghitung ulang peluang dengan `js/shared/model`). Laga yang tidak ditemukan di ESPN tetap dari snapshot dan ditandai begitu di halaman laga. CSP hanya mengizinkan `site.api.espn.com` untuk koneksi keluar, dan hanya pada build Pages.
+- Skor langsung dari penyedia berlisensi (opsional): `worker/live-proxy.js` adalah proxy Cloudflare Workers satu berkas (kunci sebagai secret, cache 15 detik, CORS dikunci ke situsmu, adaptor API-Football dan TheSportsDB). Browser memanggilnya lewat `public/js/static/proxy.js` + `live.js` bila `JONBET_LIVE_URL` diisi saat build; skor proxy menimpa ESPN untuk laga yang dikenalnya. Belum diuji ke penyedia/Cloudflare sungguhan; tutorial dan batasannya di [docs/DEPLOY.md](docs/DEPLOY.md).
 - Semua alamat relatif, sehingga jalan di subfolder (`github.io/nama-repo/`).
 - Bila pengambilan data gagal, situs memakai data terakhir yang berhasil dan menandainya "Data tertunda"; bila belum pernah berhasil, data simulasi berlabel jelas.
+- Statistik lengkap per laga (`server/providers/matchstats.js`): perbandingan tim, pemain kunci, gol dan kartu dari ringkasan ESPN, boxscore MLB, NHL, dan OpenLigaDB, diambil saat build dan disimpan di berkas data tiap laga (maks. 60 permintaan per build, laga selesai di-cache). Belum diuji ke layanan asli; tidak real-time. Penjelasan dan batasannya di [docs/DEPLOY.md](docs/DEPLOY.md).
+- Tanya AI (`server/ai/assistant.js`, tab "Tanya AI"): pertanyaan lintas laga (live, hasil, jadwal, laga ketat, pilihan model, tim) dengan konteks percakapan dan skenario "bagaimana jika" di halaman laga. Mesin aturan dan statistik, bukan model bahasa; berjalan di browser pada mode Pages.
+- Ikuti laga dan notifikasi (`public/js/notify.js`): notifikasi lokal untuk kick-off, gol, dan akhir laga, serta polling tab tersembunyi, **hanya selama aplikasi atau tab masih hidup**. Bukan push: tanpa server, notifikasi tidak bisa menjangkau aplikasi yang tertutup. Batasnya dijelaskan di [docs/DEPLOY.md](docs/DEPLOY.md).
 - Komunitas lokal: tanpa server dan tanpa kata sandi. Aturan poin sama dengan versi server (diuji dengan 600 kasus acak yang dibandingkan langsung dengan kode server).
 
 Panduan langkah demi langkah, pengaturan opsional, dan batasannya: **[docs/DEPLOY.md](docs/DEPLOY.md)**.
@@ -52,7 +56,8 @@ Panduan langkah demi langkah, pengaturan opsional, dan batasannya: **[docs/DEPLO
 |---|---|---|
 | `PORT`, `HOST` | `3000`, `0.0.0.0` | Alamat server |
 | `DB_PATH` | `data/jonbet.db` | Berkas SQLite (akun, tebakan, rating model). Taruh di disk yang awet |
-| `PROVIDER` | `auto` | `auto` (ESPN + TheSportsDB), `espn`, `thesportsdb`, atau `demo` (juga dibaca `build:pages`) |
+| `PROVIDER` | `auto` | `auto` (ESPN + API publik + TheSportsDB), `espn`, `thesportsdb`, atau `demo` (juga dibaca `build:pages`) |
+| `JONBET_LIVE_URL` | kosong | Alamat proxy skor langsung (https), dibaca `build:pages`; masuk ke `data/config.json` dan `connect-src` |
 | `THESPORTSDB_KEY` | `3` | Kunci gratis (`3`). Kunci premium membuka skor live (juga dibaca `build:pages`) |
 | `FALLBACK_DEMO` | `true` | Bila sumber nyata gagal total dan belum ada data, tampilkan data demo (dengan label jelas) |
 | `ANTHROPIC_API_KEY` | kosong | Opsional. Bila diisi, JonBet AI dijawab Claude dari data analisis. Di versi GitHub Pages kunci server tidak bisa dirahasiakan, jadi tidak dipakai; sebagai gantinya tiap pengguna bisa memasukkan kunci Claude miliknya sendiri di tab AI (disimpan hanya di perangkatnya) |
@@ -74,7 +79,8 @@ Taruh di belakang HTTPS. Jalankan satu instance saja: pembatas laju dan pengunci
 
 - **ESPN** (papan skor publik, tidak resmi; `server/providers/espn.js`): jadwal, hasil, dan status live liga-liga besar sepak bola, basket, football Amerika, baseball, hoki es. Satu permintaan rentang tanggal per liga, tanpa kunci. Sumber utama pada mode `auto`.
 - **TheSportsDB** (`server/providers/thesportsdb.js`): pelengkap untuk cabang yang tidak dicakup ESPN. Kunci gratis dibatasi (menurut dokumentasi pihak ketiga hanya ±5 laga per hari per liga) dan status "live" bisa terlambat; kunci premium (`THESPORTSDB_KEY`) membukanya. Data hasil kontribusi komunitas, sertakan atribusi bila dipublikasikan.
-- **Gabungan** (`server/providers/composite.js`): laga yang sama dari dua sumber hanya tampil sekali (versi ESPN). Satu sumber gagal, yang lain tetap dipakai.
+- **API publik tanpa kunci** (`server/providers/publicapis.js`): OpenLigaDB (Bundesliga 1-3, DFB-Pokal), MLB Stats API, NHL. Lapisan di antara ESPN dan TheSportsDB; tiap sumber berdiri sendiri dan statusnya tercatat di `data/meta.json` (`sources.public`). Bentuk respons ditulis dari dokumentasi publik dan **belum diuji ke layanan aslinya**.
+- **Gabungan** (`server/providers/composite.js`): laga yang sama dari beberapa sumber hanya tampil sekali (prioritas ESPN, API publik, TheSportsDB). Satu sumber gagal, yang lain tetap dipakai.
 - Rating Elo dibangun dari ±60 hari hasil ESPN pada build pertama, lalu terus belajar. Laga yang sama dari dua sumber tidak dihitung dua kali.
 - **Demo**: liga dan tim fiktif yang dibangkitkan deterministik, selalu ada laga live. Dipakai untuk mencoba aplikasi dan untuk tes.
 - Bila sumber nyata gagal: tampil data terakhir yang berhasil (ditandai "Data tertunda"), lalu data demo bila belum ada apa pun (ditandai di header).

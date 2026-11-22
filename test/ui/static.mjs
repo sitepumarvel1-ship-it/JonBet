@@ -60,7 +60,20 @@ assert(builtLive.outcome === 'fresh', `build situs live: ${builtLive.outcome}`);
 const AUTO_ID = 'espn:777001';
 const autoLiveEv = (hs, as, clock) => espnEvent({ id: '777001', date: NOW - 35 * 60_000, home: 'Manchester City', away: 'Arsenal', hs, as, state: 'in', period: 1, clock, venue: 'Etihad Stadium' });
 const espnSite = fakeEspnSite({ now: NOW });
+const AUTO_SUMMARY = {
+  header: { competitions: [{ competitors: [{ homeAway: 'home', team: { id: '1' } }, { homeAway: 'away', team: { id: '2' } }] }] },
+  boxscore: { teams: [
+    { team: { id: '1' }, homeAway: 'home', statistics: [{ name: 'possessionPct', displayValue: '62' }, { name: 'totalShots', displayValue: '13' }, { name: 'yellowCards', displayValue: '1' }] },
+    { team: { id: '2' }, homeAway: 'away', statistics: [{ name: 'possessionPct', displayValue: '38' }, { name: 'totalShots', displayValue: '5' }, { name: 'yellowCards', displayValue: '2' }] },
+  ] },
+  keyEvents: [
+    { type: { text: 'Goal' }, scoringPlay: true, team: { id: '1' }, clock: { displayValue: "12'" }, participants: [{ athlete: { displayName: 'Pemain Uji Satu' } }] },
+    { type: { text: 'Yellow Card' }, team: { id: '2' }, clock: { displayValue: "30'" }, participants: [{ athlete: { displayName: 'Pemain Uji Dua' } }] },
+  ],
+  leaders: [{ team: { id: '1' }, leaders: [{ displayName: 'Goals', leaders: [{ displayValue: '1', athlete: { displayName: 'Pemain Uji Satu' } }] }] }],
+};
 const autoEspn = async (url, init) => {
+  if (/\/soccer\/eng\.1\/summary\?event=777001$/.test(String(url))) return new Response(JSON.stringify(AUTO_SUMMARY), { status: 200 });
   const res = await espnSite.impl(url, init);
   if (!/\/soccer\/eng\.1\/scoreboard/.test(String(url))) return res;
   const j = await res.json();
@@ -70,8 +83,14 @@ const autoEspn = async (url, init) => {
 const builtAuto = await buildPages({ outDir: path.join(tmp, 'auto', 'dist'), stateDir: path.join(tmp, 'auto', 'state'), provider: 'auto', fetchImpl: routeFetch({ impl: autoEspn }, fakeTsdb()), gapMs: 0, retryDelayMs: 0, log: quiet });
 assert(builtAuto.outcome === 'fresh', `build situs auto: ${builtAuto.outcome}`);
 
+// Situs E: sama dengan C, tetapi dibuild dengan JONBET_LIVE_URL (proxy skor langsung milik sendiri; di tes dijawab tiruan).
+const PROXY_URL = 'https://jonbet-live.test.workers.dev/live';
+const builtProxy = await buildPages({ outDir: path.join(tmp, 'proxy', 'dist'), stateDir: path.join(tmp, 'proxy', 'state'), provider: 'thesportsdb', fetchImpl: liveTsdb, gapMs: 0, retryDelayMs: 0, log: quiet, liveUrl: PROXY_URL });
+assert(builtProxy.outcome === 'fresh', `build situs proxy: ${builtProxy.outcome}`);
+
 const siteDemo = await startStaticSite(built.outDir);
 const siteLive = await startStaticSite(builtLive.outDir);
+const siteProxy = await startStaticSite(builtProxy.outDir);
 const siteAuto = await startStaticSite(builtAuto.outDir);
 const siteReal = await startStaticSite(builtReal.outDir);
 const browser = await launch();
@@ -578,10 +597,11 @@ const waitChip = async (page, re, timeout = 9000) => {
 // Gangguan ESPN yang disengaja menimbulkan galat jaringan bawaan peramban; yang lain (CSP, galat skrip, aset gagal) tetap dihitung.
 // Baris konsol "Failed to load resource" tidak memuat alamat, tetapi kembarannya ([requestfailed]/[http NNN]) memuat dan tetap diperiksa.
 const relevant = (issues) => issues.filter((i) => !/favicon/.test(i) && !/^\[console\.error\] Failed to load resource/.test(i) && (!/espn/.test(i) || /Content Security Policy|Refused/i.test(i)));
-async function openLive(hash = '/matches', site = siteLive) {
+async function openLive(hash = '/matches', site = siteLive, setup = null) {
   const ctx = await newCtx('desktop-1440'); const page = await ctx.newPage(); const issues = watch(page);
   resetEspn();
   await page.route(ESPN_GLOB, espnHandler);
+  if (setup) await setup(page);
   await page.clock.install({ time: Date.now() });
   await ready(page, site, hash);
   return { ctx, page, issues };
@@ -629,6 +649,95 @@ await test('skor langsung: laga berubah di layar tanpa build baru, chip, keteran
   await simpleAudit(page, 'detail live');
   await page.screenshot({ path: `${OUT}/desktop-detail-live.png` });
   noIssues(relevant(issues), 'live');
+  await ctx.close();
+});
+
+await test('Tanya AI (lintas laga): live, jadwal, sambungan konteks, penolakan taruhan, tanpa panggilan /api; skenario "bagaimana jika" di detail laga', async () => {
+  const { ctx, page, issues } = await openLive('/ask');
+  const seen = []; page.on('request', (r) => seen.push(new URL(r.url()).pathname));
+  const say = async (text) => {
+    const n = await page.$$eval('.bubble.ai', (b) => b.length);
+    await page.fill('.chat-form input', text);
+    await page.press('.chat-form input', 'Enter');
+    await until(page, (k) => document.querySelectorAll('.bubble.ai').length > k && !document.querySelector('.bubble.typing'), n, 8000);
+    return page.$$eval('.bubble.ai', (b) => b[b.length - 1].textContent);
+  };
+  const live = await say('laga live sekarang');
+  assert(/laga live/.test(live) && /Manchester City/.test(live), `live: ${live}`);
+  assert((await page.$$('.ask-rows a.row')).length >= 1, 'baris laga tautan di bawah jawaban');
+  const href = await page.$eval('.ask-rows a.row', (a) => a.getAttribute('href'));
+  assert(/^#\/match\//.test(href), href);
+  const sw = await say('kalau basket?');
+  assert(/basket/.test(sw) && /laga live/.test(sw), `sambungan konteks: ${sw}`);
+  const fav = await say('favorit malam ini');
+  assert(/bukan saran bertaruh|Tidak ada laga/.test(fav), `favorit: ${fav}`);
+  assert(/tidak memberi saran bertaruh/.test(await say('kasih tip taruhan dong')), 'penolakan taruhan');
+  assert(/belum menangkap maksud/.test(await say('qwerty asdf')), 'mengaku tidak paham');
+  assert(!seen.some((p) => p.includes('/api/')), 'ada panggilan /api');
+  await simpleAudit(page, 'tanya ai');
+  await page.screenshot({ path: `${OUT}/desktop-ask.png` });
+
+  // skenario "bagaimana jika" pada laga live: peluang dihitung ulang dengan model yang sama
+  await page.goto(`${siteLive.url}${hrefOf(CITY)}`);
+  await until(page, () => !!document.querySelector('.hero'));
+  await page.click('[role=tab]:has-text("Tanya JonBet AI"), button:has-text("Tanya JonBet AI")');
+  const sayHere = async (text) => {
+    const n = await page.$$eval('.bubble.ai', (b) => b.length);
+    await page.fill('.chat-form input', text);
+    await page.press('.chat-form input', 'Enter');
+    await until(page, (k) => document.querySelectorAll('.bubble.ai').length > k && !document.querySelector('.bubble.typing'), n, 8000);
+    return page.$$eval('.bubble.ai', (b) => b[b.length - 1].textContent);
+  };
+  const what = await sayHere('Kalau Manchester City mencetak gol, bagaimana peluangnya?');
+  assert(/Jika skor menjadi \d+–\d+/.test(what) && /Saat ini:/.test(what) && /simulasi/.test(what) && !/NaN|undefined/.test(what), `what-if: ${what}`);
+  const follow = await sayHere('Kalau tim tamu?');
+  assert(!/belum menangkap maksud/.test(follow) && /%/.test(follow), `lanjutan: ${follow}`);
+  noIssues(relevant(issues), 'tanya ai');
+  await ctx.close();
+});
+
+await test('ikuti laga: izin notifikasi, gol memunculkan notifikasi lokal lewat service worker, berhenti mengikuti = tidak ada lagi', async () => {
+  const { ctx, page, issues } = await openLive(hrefOf(CITY).slice(1), siteLive, (pg) => pg.context().grantPermissions(['notifications']));
+  await until(page, () => !!document.querySelector('.hero .follow-box button'), null, 8000);
+  assert(/Ikuti laga ini/.test(await page.$eval('.follow-box button', (e) => e.textContent)), 'tombol ikuti');
+  await page.evaluate(() => navigator.serviceWorker.ready); // notifikasi lokal butuh service worker aktif
+  await page.click('.follow-box button');
+  await until(page, () => /Notifikasi aktif/.test(document.querySelector('.follow-note')?.textContent || ''), null, 8000);
+  assert(/Berhenti mengikuti/.test(await page.$eval('.follow-box button', (e) => e.textContent)), 'tombol berubah');
+  assert((await page.evaluate(() => JSON.parse(localStorage.getItem('jonbet.follows'))))[0] === CITY, 'tersimpan di perangkat');
+  const shown = () => page.evaluate(async () => (await (await navigator.serviceWorker.getRegistration()).getNotifications()).map((n) => ({ title: n.title, body: n.body, tag: n.tag })));
+
+  await advance(page, 21_000); // pengamatan pertama: hanya dasar
+  assert((await shown()).length === 0, 'tidak ada notifikasi tanpa kejadian');
+  espn.pl = board(cityEv(1, 0, "37'"));
+  await advance(page, 21_000);
+  const t0 = Date.now();
+  let list = [];
+  while (Date.now() - t0 < 8000) { list = await shown(); if (list.length) break; await new Promise((r) => setTimeout(r, 150)); }
+  assert(list.length === 1, `harus 1 notifikasi gol, dapat ${JSON.stringify(list)}`);
+  assert(/^Gol! Manchester City/.test(list[0].title) && /1–0/.test(list[0].body) && /37/.test(list[0].body), JSON.stringify(list));
+
+  // berhenti mengikuti: gol berikutnya tidak memunculkan notifikasi baru
+  await page.click('.follow-box button');
+  await until(page, () => /Ikuti laga ini/.test(document.querySelector('.follow-box button')?.textContent || ''), null, 4000);
+  espn.pl = board(cityEv(2, 0, "50'"));
+  await advance(page, 21_000);
+  await new Promise((r) => setTimeout(r, 400));
+  assert((await shown()).length === 1, 'tidak ada notifikasi baru setelah berhenti mengikuti');
+  noIssues(relevant(issues), 'ikuti laga');
+  await ctx.close();
+});
+
+await test('ikuti laga: izin ditolak -> pesan jelas, tetap diikuti tanpa notifikasi, halaman tidak rusak', async () => {
+  const { ctx, page, issues } = await openLive(hrefOf(CITY).slice(1)); // tanpa izin: Chromium menjawab "denied" untuk konteks baru
+  await page.evaluate(() => { try { Object.defineProperty(Notification, 'requestPermission', { value: async () => 'denied' }); Object.defineProperty(Notification, 'permission', { get: () => 'denied' }); } catch {} });
+  await until(page, () => !!document.querySelector('.follow-box button'), null, 8000);
+  await page.click('.follow-box button');
+  await until(page, () => /diblokir/.test(document.querySelector('.follow-note')?.textContent || ''), null, 6000);
+  assert(await page.locator('.toast, [role=status]').first().isVisible().catch(() => true), 'toast');
+  assert(/Berhenti mengikuti/.test(await page.$eval('.follow-box button', (e) => e.textContent)), 'tetap diikuti');
+  await simpleAudit(page, 'ikuti ditolak');
+  noIssues(relevant(issues), 'ikuti ditolak');
   await ctx.close();
 });
 
@@ -714,6 +823,22 @@ await test('skor langsung: ESPN bilang selesai -> laga ditandai Selesai di brows
   await ctx.close();
 });
 
+await test('statistik lengkap: tab Statistik menampilkan perbandingan, pemain kunci, gol dan kartu dari bundel build', async () => {
+  const { ctx, page, issues } = await openLive(hrefOf(AUTO_ID).slice(1), siteAuto);
+  await page.waitForSelector('.hero');
+  await page.click('[role=tab]:has-text("Statistik")');
+  await until(page, () => /Penguasaan bola/.test(document.querySelector('main').innerText));
+  const text = await page.evaluate(() => document.querySelector('main').innerText);
+  assert(/Penguasaan bola/.test(text) && /62%/.test(text) && /38%/.test(text), `persen tampil: ${text.slice(0, 300)}`);
+  assert(/Tembakan/.test(text) && /Kartu kuning/.test(text), 'baris statistik');
+  assert(/Pemain kunci/.test(text) && /Pemain Uji Satu \(1\)/.test(text), 'pemain kunci');
+  assert(/Gol Manchester City: Pemain Uji Satu/.test(text) && /Kartu kuning Arsenal: Pemain Uji Dua/.test(text), 'jalannya pertandingan dengan nama pemain');
+  assert(/tidak detik demi detik/.test(text), 'kejujuran soal kesegaran data');
+  assert((await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)), 'tanpa overflow');
+  noIssues(relevant(issues), 'statistik-lengkap');
+  await ctx.close();
+});
+
 await test('data ESPN: liga dan tim sungguhan, tanpa penanda simulasi; skor live naik lewat id ESPN walau nama tim berbeda', async () => {
   const { ctx, page, issues } = await openLive('/matches', siteAuto);
   // browser mendapat nama yang sengaja berbeda dari data build: hanya id (dan jalur liga) yang bisa menghubungkannya
@@ -735,6 +860,55 @@ await test('data ESPN: liga dan tim sungguhan, tanpa penanda simulasi; skor live
   assert(/Skor langsung dari ESPN/.test(await page.$eval('.live-note', (e) => e.textContent)), 'keterangan sumber');
   assert((await page.$eval('.hero-score .big', (e) => e.textContent)) === '2–1', 'skor di detail');
   noIssues(relevant(issues), 'data-espn');
+  await ctx.close();
+});
+
+const proxy = { mode: 'ok', calls: 0, headers: [], events: [] };
+const proxyRow = (hs, as, minute) => ({ id: 'af:5001', sport: 'football', league: 'Liga Antah Berantah', kickoff: NOW - 20 * 60_000, home: 'Persija Jakarta', away: 'Persib Bandung', hs, as, state: 'in', code: '', minute, period: 'Babak 1' });
+const proxyHandler = async (route) => {
+  espn.inflight++; // dihitung bersama ESPN supaya jam palsu tidak mendahului balasan
+  try {
+    proxy.calls++;
+    proxy.headers.push(route.request().headers());
+    if (proxy.mode === '403') return await route.fulfill({ status: 403, headers: CORS, contentType: 'application/json', body: '{"ok":false}' });
+    await route.fulfill({ status: 200, headers: CORS, contentType: 'application/json', body: JSON.stringify({ ok: true, provider: 'apifootball', label: 'API-Football', at: Date.now(), events: proxy.events }) });
+  } catch { /* konteks ditutup */ } finally { espn.inflight--; }
+};
+
+await test('proxy skor langsung: laga liga yang tak dikenal ESPN ikut live, gol naik tanpa build, sumber disebut, permintaan bersih', async () => {
+  assert(readJ(builtProxy.outDir, 'data/config.json').liveUrl === PROXY_URL, 'liveUrl tidak ada di config');
+  Object.assign(proxy, { mode: 'ok', calls: 0, headers: [], events: [proxyRow(3, 2, 23)] });
+  const { ctx, page, issues } = await openLive('/matches', siteProxy, (pg) => pg.route('https://jonbet-live.test.workers.dev/**', proxyHandler));
+  await waitScore(page, PERSIJA, '3-2');
+  assert(/23'/.test(await rowText(page, PERSIJA)), `menit: ${await rowText(page, PERSIJA)}`);
+  assert((await rowScore(page, SATRIA)) === '30-28', 'laga yang tak dikenal proxy tetap dari snapshot');
+  await until(page, (href) => /36'/.test(document.querySelector(`a.row[href="${href}"]`)?.innerText || ''), hrefOf(CITY), 8000); // ESPN tetap bekerja berdampingan
+
+  proxy.events = [proxyRow(4, 2, 24)];
+  await advance(page, 21_000);
+  await waitScore(page, PERSIJA, '4-2');
+
+  await page.goto(`${siteProxy.url}${hrefOf(PERSIJA)}`);
+  await until(page, () => !!document.querySelector('.hero .live-note'));
+  const note = await page.$eval('.live-note', (e) => e.textContent);
+  assert(/Skor langsung dari API-Football/.test(note), `keterangan sumber: ${note}`);
+
+  assert(proxy.calls >= 2, `proxy hanya dipanggil ${proxy.calls}x`);
+  for (const h of proxy.headers) assert(!Object.keys(h).some((k) => /cookie|authorization|x-api-key/i.test(k)), `header terlarang: ${Object.keys(h)}`);
+  noIssues(relevant(issues), 'proxy live');
+  await ctx.close();
+});
+
+await test('proxy skor langsung: proxy menolak (403) -> layar tetap jalan dari ESPN dan snapshot, tanpa galat di layar', async () => {
+  Object.assign(proxy, { mode: '403', calls: 0, headers: [], events: [] });
+  const { ctx, page, issues } = await openLive('/matches', siteProxy, (pg) => pg.route('https://jonbet-live.test.workers.dev/**', proxyHandler));
+  await until(page, (href) => /36'/.test(document.querySelector(`a.row[href="${href}"]`)?.innerText || ''), hrefOf(CITY), 8000);
+  assert((await rowScore(page, PERSIJA)) === '1-1', 'tanpa proxy: snapshot');
+  const callsBefore = proxy.calls;
+  await advance(page, 40_000);
+  assert(proxy.calls - callsBefore <= 1, `proxy dihantam terus: ${proxy.calls - callsBefore} panggilan dalam 40 dtk`);
+  assert(!(await page.$eval('main', (e) => e.innerText)).includes('undefined'), 'teks mentah di layar');
+  noIssues(relevant(issues).filter((i) => !/workers\.dev|403/.test(i)), 'proxy 403');
   await ctx.close();
 });
 
@@ -801,6 +975,7 @@ await browser.close();
 await siteDemo.close();
 await siteReal.close();
 await siteLive.close();
+await siteProxy.close();
 fs.rmSync(tmp, { recursive: true, force: true });
 
 const failed = results.filter((r) => !r.ok);

@@ -13,9 +13,12 @@ import { createService } from './service.js';
 import { createDemoProvider } from './providers/demo.js';
 import { createTsdbProvider } from './providers/thesportsdb.js';
 import { createEspnProvider } from './providers/espn.js';
+import { createPublicProvider } from './providers/publicapis.js';
 import { createCompositeProvider } from './providers/composite.js';
 import { SPORTS, SPORTS_BY_ID, isSport, publicSport } from './sports.js';
 import { answer, suggestionsFor, DISCLAIMER } from './ai/explainer.js';
+import { answerGlobal, cleanContext } from './ai/assistant.js';
+import { analyze } from './model/model.js';
 import { askClaude, buildContext } from './ai/llm.js';
 
 const MIME = {
@@ -49,7 +52,7 @@ export const CSP = [
   "frame-ancestors 'none'",
 ].join('; ');
 
-const MATCH_ID_RE = /^(demo|tsdb|espn):[A-Za-z0-9_-]{1,48}$/;
+const MATCH_ID_RE = /^(demo|tsdb|espn|pub):[A-Za-z0-9_-]{1,48}$/;
 const STATUSES = new Set(['all', 'live', 'upcoming', 'finished']);
 const HOUR = 3_600_000;
 
@@ -93,7 +96,7 @@ export function createApp(opts = {}) {
       ? createTsdbProvider({ key: cfg.tsdbKey, now })
       : cfg.provider === 'espn'
         ? createEspnProvider({ now, log })
-        : createCompositeProvider({ primary: createEspnProvider({ now, log }), secondary: createTsdbProvider({ key: cfg.tsdbKey, now }), log }));
+        : createCompositeProvider({ primary: createEspnProvider({ now, log }), secondary: createCompositeProvider({ primary: createPublicProvider({ now, log }), secondary: createTsdbProvider({ key: cfg.tsdbKey, now }), log }), log }));
     fallback = cfg.fallbackDemo ? demo : null;
   } else if (opts.primaryProvider) {
     primary = opts.primaryProvider;
@@ -294,7 +297,10 @@ export function createApp(opts = {}) {
       if (!question || question.length > 500) throw new HttpError(400, 'Pertanyaan harus 1 sampai 500 karakter.', 'bad_message');
       const bundle = await service.analysisBundle(matchId(m[1]));
       const sport = SPORTS_BY_ID[bundle.match.sport];
-      const args = { question, match: bundle.match, analysis: bundle.analysis, form: bundle.form, h2h: bundle.h2h, sport };
+      const simulate = bundle.ratings
+        ? (score, minute) => analyze({ sport: bundle.match.sport, match: { ...bundle.match, status: 'live', score, minute, period: null, progress: null }, homeStats: bundle.ratings.home, awayStats: bundle.ratings.away })
+        : null;
+      const args = { question, match: bundle.match, analysis: bundle.analysis, form: bundle.form, h2h: bundle.h2h, sport, context: cleanContext(body.context), simulate };
 
       if (cfg.anthropicKey) {
         try {
@@ -306,11 +312,23 @@ export function createApp(opts = {}) {
         } catch (err) {
           log('Claude API gagal, memakai JonBet AI bawaan:', err?.message);
           const r = answer(args);
-          return sendJson(req, res, 200, { reply: r.reply, source: 'jonbet', degraded: true, suggestions: r.suggestions });
+          return sendJson(req, res, 200, { reply: r.reply, source: 'jonbet', degraded: true, suggestions: r.suggestions, context: r.context });
         }
       }
       const r = answer(args);
-      return sendJson(req, res, 200, { reply: r.reply, source: 'jonbet', suggestions: r.suggestions });
+      return sendJson(req, res, 200, { reply: r.reply, source: 'jonbet', suggestions: r.suggestions, context: r.context });
+    }
+    // Asisten lintas laga: "laga live sekarang", "favorit malam ini", "jadwal basket besok"...
+    if (method === 'POST' && p === '/api/ask') {
+      const wait = limitAi(clientIp(req));
+      if (wait) throw new HttpError(429, `Terlalu banyak pertanyaan. Coba lagi dalam ${wait} detik.`, 'rate_limited');
+      const body = await readJson(req);
+      const question = String(body.message ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+      if (!question || question.length > 500) throw new HttpError(400, 'Pertanyaan harus 1 sampai 500 karakter.', 'bad_message');
+      const t = now();
+      const r = await service.list({ from: t - 2 * 86_400_000, to: t + 8 * 86_400_000, sports: null, status: 'all', q: '', limit: 500 });
+      const out = answerGlobal({ question, matches: r.matches, sports: SPORTS.map(publicSport), now: t, context: cleanContext(body.context) });
+      return sendJson(req, res, 200, { reply: out.reply, source: 'jonbet', matches: out.matchIds.map((id) => r.matches.find((m) => m.id === id)).filter(Boolean), suggestions: out.suggestions, context: out.context });
     }
 
     /* ---- komunitas ---- */

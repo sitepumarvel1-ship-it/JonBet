@@ -166,6 +166,7 @@ export function createEspnProvider({ fetchImpl = globalThis.fetch, now = () => D
     name: 'espn',
     isDemo: false,
     premium: false,
+    owns: (id) => String(id).startsWith('espn:'),
     get report() { return report; },
 
     async listMatches({ from, to, sports = null }) {

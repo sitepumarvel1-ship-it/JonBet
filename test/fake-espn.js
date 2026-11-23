@@ -106,3 +106,11 @@ export function fakeEspnSite({ now = Date.now(), leagues = LEAGUE_FIXTURES, fail
 
 /** fetch gabungan untuk tes build: alamat ESPN ke ESPN palsu, sisanya ke TheSportsDB palsu. */
 export const routeFetch = (espn, tsdb) => (url, init) => (String(url).includes('site.api.espn.com') ? espn.impl(url, init) : tsdb.impl(url, init));
+
+/** fetch tiga arah untuk tes build: ESPN, API publik tanpa kunci (publik), sisanya TheSportsDB palsu. */
+export const routeFetch3 = (espn, pub, tsdb) => (url, init) => {
+  const u = String(url);
+  if (u.includes('site.api.espn.com')) return espn.impl(url, init);
+  if (/api\.openligadb\.de|statsapi\.mlb\.com|api-web\.nhle\.com/.test(u)) return pub(url, init);
+  return tsdb.impl(url, init);
+};

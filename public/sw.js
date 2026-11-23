@@ -13,8 +13,8 @@ const SHELL = [
   'css/app.css',
   'js/main.js', 'js/mode.js', 'js/dom.js', 'js/api.js', 'js/state.js', 'js/format.js', 'js/icons.js', 'js/logo.js', 'js/logo-art.js',
   'js/charts.js', 'js/components.js', 'js/router.js', 'js/auth.js',
-  'js/views/home.js', 'js/views/matches.js', 'js/views/match.js', 'js/views/community.js', 'js/views/profile.js', 'js/views/about.js',
-  'js/static/claude.js',
+  'js/views/home.js', 'js/views/matches.js', 'js/views/match.js', 'js/views/community.js', 'js/views/profile.js', 'js/views/about.js', 'js/views/ask.js',
+  'js/static/claude.js', 'js/notify.js',
   'fonts/inter-400.woff', 'fonts/inter-600.woff', 'fonts/inter-display-700.woff', 'fonts/inter-display-800.woff',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/favicon-64.png',
 ].map(at);
@@ -38,6 +38,21 @@ self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     for (const k of await caches.keys()) if (k.startsWith('jonbet-') && k !== CACHE) await caches.delete(k);
     await self.clients.claim();
+  })());
+});
+
+// Ketukan pada notifikasi: fokuskan jendela JonBet yang ada dan buka laganya; bila tidak ada, buka jendela baru.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const hash = String(event.notification.data?.hash || '');
+  const safe = /^#\/match\/[^/?#\s]+$/.test(hash) ? hash : '';
+  event.waitUntil((async () => {
+    const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const c of all) {
+      if (!c.url.startsWith(SCOPE)) continue;
+      try { await c.focus(); c.postMessage({ type: 'jb:open', hash: safe }); return; } catch { /* coba jendela lain */ }
+    }
+    await self.clients.openWindow(SCOPE + safe);
   })());
 });
 

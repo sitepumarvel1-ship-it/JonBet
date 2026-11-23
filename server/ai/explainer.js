@@ -198,14 +198,25 @@ const INTENTS = [
   ['thanks', /\b(terima kasih|makasih|thanks|thx)\b/],
 ];
 
-export function answer({ question, match, analysis: a, form, h2h, sport }) {
+const WHATIF = /\b(kalau|jika|andai|andaikan|seandainya|misalkan|misal|bagaimana kalau|gimana kalau)\b/;
+const SCORE_RE = /(\d{1,3})\s*[-–:]\s*(\d{1,3})/;
+const FOLLOW = /\b(itu|dia|mereka|kalau|lalu|terus|dan|tapi|juga|kok|bagaimana dengan|gimana dengan)\b/;
+const PRONOUN = /\b(dia|mereka|tim itu|tim tersebut|kalau begitu)\b/;
+
+/**
+ * @param {object} args
+ * @param {object|null} [args.context] konteks jawaban sebelumnya ({ids, side}) supaya pertanyaan lanjutan dipahami
+ * @param {((score:{home:number,away:number}, minute:number|null) => object)|null} [args.simulate] menghitung ulang peluang untuk skor hipotetis
+ */
+export function answer({ question, match, analysis: a, form, h2h, sport, context = null, simulate = null }) {
   const raw = String(question || '');
   const q = norm(raw);
   const cur = a.current;
   const l = leader(a);
   const ex = explain({ match, analysis: a, form, h2h, sport });
   const sug = suggestionsFor(match, a);
-  const out = (reply) => ({ reply, suggestions: sug });
+  let ctxNext = null;
+  const out = (reply) => ({ reply, suggestions: sug, context: ctxNext });
 
   if (/\b(taruh|taruhan|bet|betting|odds?|judi|bandar|cuan|profit|handicap|parlay|togel)\b/.test(q)) {
     return out('Saya tidak memberi saran bertaruh dan JonBet tidak menyediakan odds atau taruhan. Saya hanya menjelaskan peluang statistik pertandingan ini. Taruhan uang berisiko merugikan, dan perjudian online dilarang di Indonesia.\n\n' + ex.headline);
@@ -214,12 +225,45 @@ export function answer({ question, match, analysis: a, form, h2h, sport }) {
     return out(`Halo! Saya JonBet AI. Saya bisa menjelaskan analisis ${match.home.name} lawan ${match.away.name}: peluang menang, skor yang mungkin, form tim, dan risikonya. Mau mulai dari mana?`);
   }
 
-  const side = mentionedSide(raw, match);
+  const named = mentionedSide(raw, match);
+  const side = named || (PRONOUN.test(q) && context?.side) || null;
+  ctxNext = { ids: context?.ids || [], side: side || null };
   const target = side || l.side; // tim yang dimaksud; bila tidak disebut, yang unggul
   const pOf = (sd) => (sd === 'H' ? cur.probs.home : sd === 'A' ? cur.probs.away : cur.probs.draw);
   const formOf = (sd) => formLine(sd === 'H' ? form?.home : form?.away);
   const probsLine = () => `${match.home.name} ${P(cur.probs.home)}${a.drawable ? `, seri ${P(cur.probs.draw)}` : ''}, ${match.away.name} ${P(cur.probs.away)}`;
   const nowNote = match.status === 'live' ? ' (sudah memperhitungkan skor dan sisa waktu)' : '';
+
+  // Skenario "bagaimana jika": hitung ulang peluang dengan skor hipotetis memakai model yang sama.
+  if (WHATIF.test(q) && match.status !== 'finished' && match.status !== 'cancelled') {
+    const sc = SCORE_RE.exec(raw); // q sudah membuang tanda hubung
+    const min = /\bmenit (\d{1,3})\b/.exec(q);
+    const scored = /\b(cetak|mencetak|bikin|menambah|nambah|unggul|menyamakan|mencetak gol)\b/.test(q);
+    const conceded = /\b(kebobolan|bobol|dibobol)\b/.test(q);
+    let hyp = null;
+    if (sc) hyp = { home: Number(sc[1]), away: Number(sc[2]) };
+    else if ((scored || conceded) && named) {
+      const base = match.score || { home: 0, away: 0 };
+      const homeScores = (named === 'H') !== conceded; // yang kebobolan = lawannya yang mencetak
+      hyp = { home: base.home + (homeScores ? 1 : 0), away: base.away + (homeScores ? 0 : 1) };
+    }
+    if (hyp && simulate && sport.id !== 'tennis') {
+      const minute = min ? Number(min[1]) : Number.isFinite(match.minute) ? match.minute : null;
+      let sim = null;
+      try { sim = simulate(hyp, minute); } catch { sim = null; }
+      if (sim) {
+        const np = sim.current.probs;
+        const now = `${match.home.name} ${P(cur.probs.home)}${a.drawable ? `, seri ${P(cur.probs.draw)}` : ''}, ${match.away.name} ${P(cur.probs.away)}`;
+        const then = `${match.home.name} ${P(np.home)}${a.drawable ? `, seri ${P(np.draw)}` : ''}, ${match.away.name} ${P(np.away)}`;
+        const moves = [['H', cur.probs.home, np.home], ['A', cur.probs.away, np.away], ...(a.drawable ? [['D', cur.probs.draw, np.draw]] : [])]
+          .sort((x, y) => Math.abs(y[2] - y[1]) - Math.abs(x[2] - x[1]))[0];
+        const dir = moves[2] > moves[1] ? 'naik' : 'turun';
+        ctxNext = { ids: ['winner'], side: named || null };
+        return out(`Jika skor menjadi ${hyp.home}–${hyp.away}${minute !== null ? ` pada menit ${minute}` : ''}, peluang menjadi: ${then}. Saat ini: ${now}. Yang paling berubah: peluang ${sideName(match, moves[0])} ${dir} dari ${P(moves[1])} ke ${P(moves[2])}. Ini simulasi dengan model yang sama, bukan perkiraan kejadian nyata.`);
+      }
+    }
+    if (!hyp && (scored || conceded || /\b(skor|gol|poin)(nya)?\b/.test(q))) return out('Untuk skenario "bagaimana jika", sebutkan skornya atau siapa yang mencetak gol, misalnya: "kalau skor 1–0 di menit 60" atau "kalau ' + match.home.name + ' mencetak gol".');
+  }
 
   const handlers = {
     winner() {
@@ -299,10 +343,13 @@ export function answer({ question, match, analysis: a, form, h2h, sport }) {
   if (ids.includes('outside') && ids.length > 1) ids = ids.filter((x) => x !== 'summary');
   if (ids.includes('summary') && ids.length > 1) ids = ids.filter((x) => x !== 'summary' || !ids.some((y) => !['winner', 'live'].includes(y) && y !== 'summary'));
   ids = ids.slice(0, 3);
+  // Pertanyaan lanjutan ("kalau tim tamu?", "kenapa begitu?", "dia bagaimana?") memakai maksud jawaban sebelumnya.
+  if (!ids.length && context?.ids?.length && (named || q.split(' ').length <= 6 || FOLLOW.test(q) || PRONOUN.test(q))) ids = context.ids.filter((id) => Object.prototype.hasOwnProperty.call(handlers, id)).slice(0, 3); // konteks datang dari klien: hanya maksud yang dikenal
 
   if (!ids.length) {
     if (side) return out(`Peluang ${sideName(match, side)} menang ${P(pOf(side))}${nowNote}. ${formOf(side) || 'Belum ada riwayat laga untuk tim ini.'}`);
     return out(`Saya belum menangkap maksud pertanyaan itu, dan saya hanya bisa menjawab dari angka analisis pertandingan ini (bukan model bahasa umum). Coba tanyakan misalnya: siapa yang lebih berpeluang menang, kenapa, skor yang mungkin, atau risikonya.\n\nRingkasan: ${ex.headline}`);
   }
+  ctxNext = { ids, side: side || null };
   return out(ids.map((id) => handlers[id]()).join('\n\n'));
 }

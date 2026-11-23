@@ -227,3 +227,71 @@ test('AI bawaan: memahami pertanyaan wajar (kata utuh, banyak maksud, peran tim,
     assert.match(await A('kapan mulainya?'), /WIB/);
   } finally { await t.close(); }
 });
+
+test('AI per laga: pertanyaan lanjutan memakai konteks; skenario "bagaimana jika" dihitung ulang dengan model yang sama', async () => {
+  const t = await boot();
+  try {
+    const m = (await t.req('GET', '/api/matches?status=live&sport=football')).json.matches[0];
+    assert.ok(m, 'perlu laga live sepak bola di data demo');
+    const r1 = await ask(t, m.id, 'Bagaimana form kedua tim?');
+    assert.ok(r1.json.context && r1.json.context.ids.includes('form'), JSON.stringify(r1.json.context));
+    const r2 = await ask(t, m.id, 'kalau tim tamu?', { context: r1.json.context });
+    assert.ok(r2.json.reply.includes(m.away.name) && !r2.json.reply.includes(`${m.home.name}:`), r2.json.reply);
+    assert.doesNotMatch(r2.json.reply, /belum menangkap maksud/);
+    // tanpa konteks, kalimat yang sama tidak dipahami dengan salah
+    const r3 = await ask(t, m.id, 'hmm begitu ya');
+    assert.match(r3.json.reply, /belum menangkap maksud/);
+    // konteks dari klien tidak dipercaya
+    const r4 = await ask(t, m.id, 'oke', { context: { ids: ['__proto__', 'constructor', 'x'.repeat(500)], side: 'Z' } });
+    assert.equal(r4.status, 200);
+    assert.doesNotMatch(r4.json.reply, /undefined|NaN|\[object/);
+
+    const w = await ask(t, m.id, `Kalau ${m.home.name} mencetak gol, bagaimana peluangnya?`);
+    assert.match(w.json.reply, /Jika skor menjadi \d+–\d+/);
+    assert.match(w.json.reply, /Saat ini:/);
+    const exact = await ask(t, m.id, 'kalau skor jadi 3-0 di menit 80, siapa menang?');
+    assert.match(exact.json.reply, /Jika skor menjadi 3–0 pada menit 80/);
+    const p = /peluang menjadi: (.*?)\. Saat ini/.exec(exact.json.reply)[1];
+    assert.match(p, new RegExp(`${m.home.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} (9\\d|100|lebih dari 99)`), `3-0 menit 80 harus membuat tuan rumah hampir pasti menang: ${p}`);
+    const vague = await ask(t, m.id, 'kalau skornya berubah gimana?');
+    assert.match(vague.json.reply, /sebutkan skornya/);
+
+    // aman untuk semua cabang dan status: tidak ada NaN/undefined
+    for (const s of SPORTS) {
+      for (const status of ['upcoming', 'live']) {
+        const list = (await t.req('GET', `/api/matches?status=${status}&sport=${s.id}`)).json.matches;
+        if (!list.length) continue;
+        for (const q of ['kalau skor 1-0 di menit 20', `kalau ${list[0].home.name} mencetak gol`, `kalau ${list[0].away.name} kebobolan`]) {
+          const r = await ask(t, list[0].id, q);
+          assert.equal(r.status, 200, `${s.id}/${status}/${q}`);
+          assert.doesNotMatch(r.json.reply, /NaN|undefined|Infinity|\[object/, `${s.id}/${status}/${q}: ${r.json.reply}`);
+        }
+      }
+    }
+    const fin = (await t.req('GET', '/api/matches?status=finished')).json.matches[0];
+    if (fin) assert.doesNotMatch((await ask(t, fin.id, 'kalau skor 1-0')).json.reply, /Jika skor menjadi/, 'laga selesai tidak disimulasikan');
+  } finally { await t.close(); }
+});
+
+test('asisten lintas laga di server: /api/ask menjawab dari data, memuat laga, konteks, dan batas', async () => {
+  const t = await boot();
+  try {
+    const ask2 = (message, extra = {}) => t.req('POST', '/api/ask', { body: { message, ...extra } });
+    const r = await ask2('laga live sekarang');
+    assert.equal(r.status, 200, r.text);
+    assert.match(r.json.reply, /laga live/);
+    assert.ok(Array.isArray(r.json.matches) && r.json.matches.length >= 1);
+    assert.ok(r.json.matches.every((m) => m.id && m.home && m.status === 'live'));
+    assert.doesNotMatch(r.json.reply, /NaN|undefined|\[object/);
+    const sw = await ask2('kalau basket?', { context: r.json.context });
+    assert.equal(sw.status, 200);
+    assert.equal(sw.json.context.kind, 'live');
+    const fav = await ask2('favorit besok');
+    assert.equal(fav.status, 200);
+    assert.doesNotMatch(fav.json.reply, /odds/i);
+    assert.match((await ask2('tip taruhan malam ini')).json.reply, /tidak memberi saran bertaruh/);
+    assert.equal((await ask2('')).status, 400);
+    assert.equal((await ask2('x'.repeat(501))).status, 400);
+    assert.equal((await ask2('halo', { context: 'bukan objek' })).status, 200);
+  } finally { await t.close(); }
+});

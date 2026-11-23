@@ -298,6 +298,31 @@ test('makeFetch: jeda antar permintaan nyata, cache menurut umur tanggal, coba u
 const quiet = () => {};
 const readJ = (...p) => JSON.parse(fs.readFileSync(path.join(...p), 'utf8'));
 
+test('build: JONBET_LIVE_URL masuk ke config.json dan connect-src; alamat tidak sah diabaikan dengan peringatan', async () => {
+  const cspOf = (dist) => {
+    const html = fs.readFileSync(path.join(dist, 'index.html'), 'utf8');
+    const csp = /http-equiv="Content-Security-Policy" content="([^"]+)"/.exec(html)[1];
+    return Object.fromEntries(csp.split('; ').map((d) => [d.split(' ')[0], d.split(' ').slice(1)]));
+  };
+  const url = 'https://jonbet-live.akmal.workers.dev/live';
+  const logs = [];
+  const a = await buildPages({ outDir: path.join(tmp('o'), 'dist'), stateDir: tmp('s'), provider: 'demo', now: () => T0, log: (m) => logs.push(m), liveUrl: url });
+  assert.equal(readJ(a.outDir, 'data/config.json').liveUrl, url);
+  assert.deepEqual(cspOf(a.outDir)['connect-src'], ["'self'", 'https://site.api.espn.com', 'https://api.anthropic.com', 'https://jonbet-live.akmal.workers.dev']);
+  assert.ok(logs.some((l) => l.includes('Proxy skor langsung: https://jonbet-live.akmal.workers.dev')));
+  assert.ok(!Object.keys(readJ(a.outDir, 'data/config.json')).some((k) => /key|secret|token/i.test(k)), 'tidak ada kunci di config');
+
+  for (const bad of ['http://x.workers.dev/live', 'https://user:pw@x.workers.dev/live', 'bukan url', 'javascript:alert(1)']) {
+    const wl = [];
+    const b = await buildPages({ outDir: path.join(tmp('o'), 'dist'), stateDir: tmp('s'), provider: 'demo', now: () => T0, log: (m) => wl.push(m), liveUrl: bad });
+    assert.equal(readJ(b.outDir, 'data/config.json').liveUrl, undefined, bad);
+    assert.deepEqual(cspOf(b.outDir)['connect-src'], ["'self'", 'https://site.api.espn.com', 'https://api.anthropic.com'], bad);
+    assert.ok(wl.some((l) => l.includes('JONBET_LIVE_URL diabaikan')), bad);
+  }
+  const c = await buildPages({ outDir: path.join(tmp('o'), 'dist'), stateDir: tmp('s'), provider: 'demo', now: () => T0, log: quiet });
+  assert.equal(readJ(c.outDir, 'data/config.json').liveUrl, undefined, 'tanpa pengaturan = seperti sebelumnya');
+});
+
 test('build GitHub Pages (demo): situs lengkap, relatif, CSP lewat meta, setiap daftar punya bundel', async () => {
   const out = tmp('out'); const state = tmp('state');
   const r = await buildPages({ outDir: path.join(out, 'dist'), stateDir: state, provider: 'demo', now: () => T0, log: quiet });

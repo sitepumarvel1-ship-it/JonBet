@@ -13,10 +13,13 @@ import { matchView } from './views/match.js';
 import { communityView } from './views/community.js';
 import { profileView } from './views/profile.js';
 import { aboutView } from './views/about.js';
+import { askView } from './views/ask.js';
+import { initNotify } from './notify.js';
 
 const NAV = [
   ['/', 'Beranda', 'home'],
   ['/matches', 'Pertandingan', 'list'],
+  ['/ask', 'Tanya AI', 'spark'],
   ['/community', 'Komunitas', 'people'],
   ['/me', 'Profil', 'user'],
 ];
@@ -178,6 +181,7 @@ async function boot() {
 
   route('/', homeView);
   route('/matches', matchesView);
+  route('/ask', askView);
   route('/match/:id', matchView);
   route('/community', communityView);
   route('/me', profileView);
@@ -185,6 +189,7 @@ async function boot() {
   route('/about', aboutView);
   route('/404', () => ({ el: h('div', { class: 'page' }, emptyBox('Halaman tidak ditemukan', 'Alamat yang kamu buka tidak ada di JonBet.', h('a', { class: 'btn btn-sm', href: '#/' }, 'Ke beranda'))), title: 'Tidak ditemukan' }));
   start(main);
+  initNotify();
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('sw.js').catch(() => { /* PWA opsional */ });

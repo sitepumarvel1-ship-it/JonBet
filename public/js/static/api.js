@@ -15,14 +15,17 @@ function startLive() {
     try {
       const cfg = await data.config();
       if (cfg.demo) return; // liga fiktif: tidak ada yang bisa ditanyakan ke ESPN
-      const [model, ai, live] = await Promise.all([import('../shared/model/model.js'), import('../shared/ai/explainer.js'), import('./live.js')]);
+      const [model, ai, live, proxy, notify] = await Promise.all([import('../shared/model/model.js'), import('../shared/ai/explainer.js'), import('./live.js'), import('./proxy.js'), import('../notify.js')]);
       const f = live.createLiveFeed({
         getSnapshot: data.matches,
         getBundle: data.bundle,
         sportOf: (id) => cfg.sports.find((s) => s.id === id) || null,
+        proxyUrl: proxy.cleanProxyUrl(cfg.liveUrl),
         model: { analyze: model.analyze, pickOf: model.pickOf },
         explain: ai.explain,
         onChange: () => document.dispatchEvent(new CustomEvent('jb:live')),
+        onEvent: (e) => { notify.notifyEvent(e); },
+        hiddenOk: () => notify.isActive(),
         visible: () => document.visibilityState === 'visible',
         online: () => navigator.onLine,
       });
@@ -105,10 +108,14 @@ export async function handle(path, { method = 'GET', body } = {}) {
     if (method === 'POST' && (m = /^\/api\/matches\/([^/]+)\/ai$/.exec(p))) {
       const question = String(body?.message ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
       if (!question || question.length > 500) throw new ApiError('Pertanyaan harus 1 sampai 500 karakter.', 400, 'bad_message');
-      const [raw, cfg, { answer }] = await Promise.all([data.bundle(decode(m[1])), data.config(), import('../shared/ai/explainer.js')]);
+      const [raw, cfg, { answer }, assistant, model] = await Promise.all([data.bundle(decode(m[1])), data.config(), import('../shared/ai/explainer.js'), import('../shared/ai/assistant.js'), import('../shared/model/model.js')]);
       const b = feed ? feed.applyBundle(raw) : raw; // JonBet AI menjawab dari skor terkini, bukan skor snapshot
       const sport = cfg.sports.find((s) => s.id === b.match.sport);
-      const input = { question, match: b.match, analysis: b.analysis, form: b.form, h2h: b.h2h, sport };
+      // Skenario "bagaimana jika": model yang sama dihitung ulang dengan skor hipotetis.
+      const simulate = b.ratings
+        ? (score, minute) => model.analyze({ sport: b.match.sport, match: { ...b.match, status: 'live', score, minute, period: null, progress: null }, homeStats: b.ratings.home, awayStats: b.ratings.away })
+        : null;
+      const input = { question, match: b.match, analysis: b.analysis, form: b.form, h2h: b.h2h, sport, context: assistant.cleanContext(body?.context), simulate };
       const r = answer(input);
       // Bila pengguna memasukkan kunci Claude sendiri: Claude menjawab dari angka analisis; gagal apa pun -> model bawaan.
       const { getClaude } = await import('./claude.js');
@@ -117,12 +124,24 @@ export async function handle(path, { method = 'GET', body } = {}) {
         try {
           const llm = await import('../shared/ai/llm.js');
           const reply = await llm.askClaude({ apiKey: cl.key, model: cl.model, context: llm.buildContext(input), history: Array.isArray(body?.history) ? body.history : [], question, browser: true });
-          return { reply, source: 'claude', suggestions: r.suggestions };
+          return { reply, source: 'claude', suggestions: r.suggestions, context: r.context };
         } catch (err) {
-          return { reply: r.reply, source: 'jonbet', degraded: true, degradedReason: /HTTP 401|HTTP 403/.test(String(err?.message)) ? 'kunci' : 'umum', suggestions: r.suggestions };
+          return { reply: r.reply, source: 'jonbet', degraded: true, degradedReason: /HTTP 401|HTTP 403/.test(String(err?.message)) ? 'kunci' : 'umum', suggestions: r.suggestions, context: r.context };
         }
       }
-      return { reply: r.reply, source: 'jonbet', suggestions: r.suggestions };
+      return { reply: r.reply, source: 'jonbet', suggestions: r.suggestions, context: r.context };
+    }
+
+    // Asisten lintas laga, dijawab di browser dari snapshot (dengan skor langsung terpasang).
+    if (method === 'POST' && p === '/api/ask') {
+      const question = String(body?.message ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+      if (!question || question.length > 500) throw new ApiError('Pertanyaan harus 1 sampai 500 karakter.', 400, 'bad_message');
+      const [rawSnap, cfg, assistant] = await Promise.all([data.matches(), data.config(), import('../shared/ai/assistant.js')]);
+      startLive();
+      const snap = feed ? feed.applyList(rawSnap) : rawSnap;
+      const out = assistant.answerGlobal({ question, matches: snap.matches, sports: cfg.sports, now: Date.now(), context: assistant.cleanContext(body?.context) });
+      const byId = new Map(snap.matches.map((m) => [m.id, m]));
+      return { reply: out.reply, source: 'jonbet', matches: out.matchIds.map((id) => byId.get(id)).filter(Boolean), suggestions: out.suggestions, context: out.context };
     }
 
     if (method === 'GET' && p === '/api/model/record') {

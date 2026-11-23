@@ -163,6 +163,7 @@ export function createTsdbProvider({ key = '3', fetchImpl = globalThis.fetch, no
     name: 'thesportsdb',
     isDemo: false,
     premium,
+    owns: (id) => String(id).startsWith('tsdb:'),
 
     async listMatches({ from, to, sports = null }) {
       const wanted = sports ? SPORTS.filter((s) => sports.includes(s.id)) : SPORTS;

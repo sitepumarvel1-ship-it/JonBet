@@ -3,10 +3,13 @@
 // Snapshot dari build hanya segar sampai beberapa menit lalu. Untuk laga yang sedang (atau hampir) berlangsung,
 // modul ini menanyakan skor ke ESPN langsung dari browser tiap ±20 detik, mencocokkannya dengan laga di snapshot,
 // lalu menimpa status/skor/menit dan menghitung ulang peluang dengan model yang sama (js/shared/model).
-// Laga yang tidak ditemukan di ESPN tetap memakai data snapshot, dan ditandai begitu di tampilan.
+// Bila situs diberi alamat proxy (data/config.json: liveUrl), proxy milik sendiri di depan penyedia data berlisensi ikut ditanya
+// setiap putaran dan, untuk laga yang dikenalnya, mengalahkan ESPN. Tanpa proxy, perilakunya sama seperti sebelumnya.
+// Laga yang tidak ditemukan di sumber mana pun tetap memakai data snapshot, dan ditandai begitu di tampilan.
 //
 // Semua dependensi disuntikkan (jaringan, jam, model) supaya modul ini bisa diuji di Node tanpa browser.
 import { endpointsFor, overlayOf, parseScoreboard, pickEvent, scoreboardUrl } from './espn.js';
+import { overlayFromProxy, parseProxy } from './proxy.js';
 
 const MINUTE = 60_000;
 const SOON_MS = 20 * MINUTE; // laga yang akan mulai dalam 20 menit sudah dipantau
@@ -18,23 +21,29 @@ export function createLiveFeed({
   getSnapshot,
   getBundle,
   sportOf = () => null,
+  proxyUrl = null, // alamat proxy skor langsung (https) atau null
   model, // { analyze, pickOf }
   explain,
   fetchImpl = (...a) => globalThis.fetch(...a),
   now = () => Date.now(),
   onChange = () => {},
+  onEvent = () => {}, // gol, mulai, selesai (untuk notifikasi); dipanggil sekali per kejadian
   visible = () => true,
+  hiddenOk = () => false, // true: tetap bertanya (lebih jarang) walau tab tersembunyi, mis. ada laga yang diikuti
+
   online = () => true,
   maxEndpoints = 6,
   timeoutMs = 6000,
-  intervals = { live: 20_000, soon: 40_000, idle: 60_000 },
+  intervals = { live: 20_000, soon: 40_000, idle: 60_000, hidden: 60_000 },
 }) {
-  const overlays = new Map(); // id -> { status, score, minute, period, progress, espnId, at }
+  const overlays = new Map(); // id -> { status, score, minute, period, progress, espnId, src, at }
   const derived = new Map(); // id -> { sig, forecast }
   const bundles = new Map(); // id -> { builtAt, bundle }
   const cooldown = new Map(); // path -> { until, fails }
   const lastPolled = new Map(); // path -> waktu
-  const stats = { wanted: 0, polled: 0, lastOkAt: null, hadLive: false, failCycles: 0 };
+  const seen = new Map(); // id -> { status, home, away }: skor/status tertinggi yang sudah diamati (dasar deteksi gol)
+  let touched = new Set(); // id yang overlay-nya diperbarui pada putaran ini
+  const stats = { wanted: 0, polled: 0, lastOkAt: null, proxyOkAt: null, hadLive: false, failCycles: 0 };
   let snapBuiltAt = 0;
   let busy = false;
   let timer = null;
@@ -57,7 +66,7 @@ export function createLiveFeed({
     minute: ov.minute,
     period: ov.period,
     progress: ov.progress,
-    liveSrc: { name: 'ESPN', at: ov.at },
+    liveSrc: { name: ov.src || 'ESPN', at: ov.at },
   });
 
   function forecastOf(a) {
@@ -93,6 +102,32 @@ export function createLiveFeed({
     }
   }
 
+  async function pollProxy() {
+    const ctl = new AbortController();
+    const timeout = setTimeout(() => ctl.abort(), timeoutMs);
+    try {
+      // GET tanpa header khusus: tidak memicu preflight CORS.
+      const res = await fetchImpl(proxyUrl, { signal: ctl.signal, cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer' });
+      if (!res.ok) {
+        const err = new Error(`HTTP ${res.status}`);
+        err.status = res.status;
+        throw err;
+      }
+      return parseProxy(await res.json());
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  /** Pasang overlay dan laporkan apakah tampilannya berubah. */
+  function setOverlay(m, ov, t, src) {
+    const prev = overlays.get(m.id);
+    const next = { ...ov, src, at: t };
+    overlays.set(m.id, next);
+    touched.add(m.id);
+    return !prev || sigOf(prev) !== sigOf(next);
+  }
+
   function penalize(path, err, t) {
     const prev = cooldown.get(path)?.fails || 0;
     const fails = prev + 1;
@@ -123,7 +158,7 @@ export function createLiveFeed({
   /** Satu putaran: tanya ESPN untuk laga yang relevan, perbarui overlay. */
   async function tick() {
     if (busy) return { skipped: 'busy' };
-    if (!visible() || !online()) return { skipped: 'hidden' };
+    if (!(visible() || hiddenOk()) || !online()) return { skipped: 'hidden' };
     busy = true;
     try {
       const snap = await getSnapshot();
@@ -147,7 +182,11 @@ export function createLiveFeed({
         .slice(0, maxEndpoints);
       stats.polled = chosen.length;
 
-      const results = await Promise.allSettled(chosen.map((g) => poll(g.ep)));
+      const askProxy = !!proxyUrl && wanted.length > 0 && (cooldown.get('proxy')?.until || 0) <= t;
+      const [results, proxyRes] = await Promise.all([
+        Promise.allSettled(chosen.map((g) => poll(g.ep))),
+        askProxy ? pollProxy().then((value) => ({ value }), (reason) => ({ reason })) : null,
+      ]);
       const changedIds = [];
       let ok = 0;
       results.forEach((r, i) => {
@@ -160,16 +199,27 @@ export function createLiveFeed({
           const hit = pickEvent(m, r.value);
           const ov = hit && overlayOf(m, hit.ev, hit.swapped);
           if (!ov) continue;
-          const prev = overlays.get(m.id);
-          const next = { ...ov, at: t };
-          overlays.set(m.id, next);
-          if (!prev || sigOf(prev) !== sigOf(next)) changedIds.push(m.id);
+          if (setOverlay(m, ov, t, 'ESPN')) changedIds.push(m.id);
         }
       });
-      if (ok) { stats.lastOkAt = t; stats.failCycles = 0; } else if (chosen.length) stats.failCycles++;
+      // Proxy dipasang terakhir supaya skornya menimpa ESPN untuk laga yang dikenalnya.
+      if (proxyRes) {
+        if (proxyRes.reason) penalize('proxy', proxyRes.reason, t);
+        else if (!proxyRes.value.stale) {
+          cooldown.delete('proxy');
+          ok++;
+          stats.proxyOkAt = t;
+          for (const m of wanted) {
+            const ov = overlayFromProxy(m, proxyRes.value.events);
+            if (ov && setOverlay(m, ov, t, proxyRes.value.label)) changedIds.push(m.id);
+          }
+        }
+      }
+      if (ok) { stats.lastOkAt = t; stats.failCycles = 0; } else if (chosen.length || proxyRes) stats.failCycles++;
 
       const byId = new Map(snap.matches.map((m) => [m.id, m]));
-      for (const id of changedIds.slice(0, 40)) {
+      detectEvents(byId, t);
+      for (const id of [...new Set(changedIds)].slice(0, 40)) {
         const m = byId.get(id);
         if (m) await ensureDerived(m);
       }
@@ -178,6 +228,36 @@ export function createLiveFeed({
       return { polled: chosen.length, ok, changed: changedIds.length };
     } finally {
       busy = false;
+    }
+  }
+
+  /**
+   * Kejadian dideteksi setelah semua sumber putaran ini dipasang (bukan per sumber), dibandingkan dengan skor tertinggi yang pernah diamati,
+   * jadi dua sumber yang berselisih sesaat tidak menghasilkan "gol" ganda. Pengamatan pertama hanya menjadi dasar; satu-satunya kejadian
+   * yang dilaporkan dari pengamatan pertama adalah "mulai", dan hanya bila laga baru saja mulai.
+   */
+  function detectEvents(byId, t) {
+    const ids = [...touched];
+    touched = new Set();
+    for (const id of ids) {
+      const m = byId.get(id);
+      const ov = overlays.get(id);
+      if (!m || !ov) continue;
+      const prev = seen.get(id);
+      const cur = { status: ov.status, home: ov.score.home, away: ov.score.away };
+      const emit = (type, side = null) => {
+        try { onEvent({ type, match: m, score: { home: cur.home, away: cur.away }, side, minute: ov.minute, period: ov.period, src: ov.src || 'ESPN', at: t }); } catch { /* pendengar bermasalah tidak boleh mengganggu pemantauan */ }
+      };
+      if (!prev) {
+        seen.set(id, cur);
+        if (ov.status === 'live' && m.status === 'upcoming' && (ov.minute === null || ov.minute <= 3)) emit('start');
+        continue;
+      }
+      if (prev.status !== 'finished') {
+        for (const [key, side] of [['home', 'H'], ['away', 'A']]) if (cur[key] > prev[key]) emit('goal', side); // gol terakhir sebelum peluit akhir tetap dilaporkan
+        if (ov.status === 'finished') emit('end');
+      }
+      seen.set(id, { status: prev.status === 'finished' || ov.status === 'finished' ? 'finished' : 'live', home: Math.max(prev.home, cur.home), away: Math.max(prev.away, cur.away) });
     }
   }
 
@@ -227,10 +307,13 @@ export function createLiveFeed({
     let state = 'idle';
     if (stats.failCycles >= 2) state = 'down';
     else if (stats.lastOkAt && t - stats.lastOkAt <= FRESH_MS && covered > 0) state = 'live';
-    return { state, covered, wanted: stats.wanted, lastOkAt: stats.lastOkAt };
+    return { state, covered, wanted: stats.wanted, lastOkAt: stats.lastOkAt, proxyOkAt: stats.proxyOkAt };
   }
 
-  const nextDelay = () => (stats.hadLive ? intervals.live : stats.wanted > 0 ? intervals.soon : intervals.idle);
+  const nextDelay = () => {
+    const d = stats.hadLive ? intervals.live : stats.wanted > 0 ? intervals.soon : intervals.idle;
+    return visible() ? d : Math.max(d, intervals.hidden ?? 60_000); // tab tersembunyi: lebih jarang (browser juga membatasi timer)
+  };
 
   function loop() {
     if (!running) return;

@@ -35,19 +35,23 @@ export function mergeMatches(main, extra) {
   return [...main, ...kept];
 }
 
+// Penyedia yang tidak menyatakan kepemilikan id dianggap pemilik awalan "<nama>:".
+const owns = (p, id) => (p.owns ? p.owns(id) : String(id).startsWith(`${p.name}:`));
+
 export function createCompositeProvider({ primary, secondary, log = () => {} }) {
   let report = null;
   return {
     name: `${primary.name}+${secondary.name}`,
     isDemo: false,
     premium: !!secondary.premium,
+    owns: (id) => owns(primary, id) || owns(secondary, id),
     get report() { return report; },
 
     async listMatches(args) {
       const [a, b] = await Promise.allSettled([primary.listMatches(args), secondary.listMatches(args)]);
       report = {
         [primary.name]: a.status === 'fulfilled' ? { ok: true, matches: a.value.length, ...(primary.report ? { detail: primary.report } : {}) } : { ok: false, error: String(a.reason?.message || a.reason) },
-        [secondary.name]: b.status === 'fulfilled' ? { ok: true, matches: b.value.length } : { ok: false, error: String(b.reason?.message || b.reason) },
+        [secondary.name]: b.status === 'fulfilled' ? { ok: true, matches: b.value.length, ...(secondary.report ? { detail: secondary.report } : {}) } : { ok: false, error: String(b.reason?.message || b.reason) },
       };
       if (a.status === 'rejected' && b.status === 'rejected') {
         const ma = String(a.reason?.message || a.reason);
@@ -62,7 +66,7 @@ export function createCompositeProvider({ primary, secondary, log = () => {} }) 
     },
 
     async getMatch(id) {
-      return String(id).startsWith('espn:') ? primary.getMatch(id) : secondary.getMatch(id);
+      return owns(primary, id) ? primary.getMatch(id) : secondary.getMatch(id);
     },
   };
 }

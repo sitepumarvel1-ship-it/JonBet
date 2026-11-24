@@ -126,8 +126,99 @@ function parseEspnLeaders(json, ids) {
   return [...byCat.values()].slice(0, 8);
 }
 
-/** Ringkasan laga ESPN -> { stats, events, leaders }. */
-export function parseEspnSummary(json) {
+/* ------------------------------------------------------------------ susunan pemain */
+
+const SOCCER_PLAYER_STATS = [
+  ['totalGoals', 'Gol'], ['goalAssists', 'Assist'], ['totalShots', 'Tembakan'], ['shotsOnTarget', 'Tepat sasaran'], ['saves', 'Penyelamatan'],
+  ['goalsConceded', 'Kebobolan'], ['foulsCommitted', 'Pelanggaran'], ['foulsSuffered', 'Dilanggar'], ['offsides', 'Offside'],
+  ['yellowCards', 'Kartu kuning'], ['redCards', 'Kartu merah'], ['ownGoals', 'Gol bunuh diri'],
+];
+const BASKET_COLUMNS = ['MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TO', 'FG', '3PT', 'FT', 'PF', '+/-'];
+const LINEUP_MAX = 26;
+
+const personName = (a) => str(a?.displayName ?? a?.fullName ?? a?.shortName, 40);
+const jerseyOf = (v) => { const j = str(v, 4); return /^\d{1,3}$/.test(j) ? j : ''; };
+
+function formationOf(r) {
+  const f = typeof r?.formation === 'string' ? r.formation : r?.formation?.name ?? r?.formation?.displayName ?? '';
+  const t = str(f, 14).replace(/\s+/g, '');
+  return /^\d(?:-\d){1,5}$/.test(t) ? t : null;
+}
+
+function soccerPlayer(e) {
+  const name = personName(e?.athlete);
+  if (!name) return null;
+  const byName = new Map((Array.isArray(e?.stats) ? e.stats : []).map((x) => [str(x?.name, 30), x]));
+  const st = [];
+  for (const [key, label] of SOCCER_PLAYER_STATS) {
+    const x = byName.get(key);
+    const n = x ? Number(x.value ?? x.displayValue) : NaN;
+    if (Number.isFinite(n) && n > 0) st.push([label, n]);
+    if (st.length >= 6) break;
+  }
+  const place = Number(e?.formationPlace);
+  return {
+    name, jersey: jerseyOf(e?.jersey ?? e?.athlete?.jersey), pos: str(e?.position?.abbreviation, 4),
+    ...(Number.isInteger(place) && place >= 1 && place <= 11 ? { place } : {}),
+    ...(e?.subbedOut?.didSub === true ? { out: true } : {}),
+    ...(e?.subbedIn?.didSub === true ? { in: true } : {}),
+    st,
+  };
+}
+
+function parseSoccerLineups(json, ids) {
+  const out = {};
+  for (const r of Array.isArray(json?.rosters) ? json.rosters : []) {
+    const ha = str(r?.homeAway, 6).toLowerCase();
+    const side = ids.get(str(r?.team?.id, 20)) || (ha === 'home' || ha === 'away' ? ha : null);
+    if (!side || !Array.isArray(r?.roster)) continue;
+    const players = r.roster.map((e) => ({ p: soccerPlayer(e), starter: e?.starter === true })).filter((x) => x.p);
+    const starters = players.filter((x) => x.starter).map((x) => x.p).slice(0, 11);
+    const bench = players.filter((x) => !x.starter).map((x) => x.p).slice(0, LINEUP_MAX);
+    if (!starters.length && !bench.length) continue;
+    out[side] = { formation: formationOf(r), starters, bench };
+  }
+  return out.home || out.away ? { kind: 'soccer', home: out.home || { formation: null, starters: [], bench: [] }, away: out.away || { formation: null, starters: [], bench: [] } } : null;
+}
+
+function parseBasketLineups(json, ids) {
+  const out = {};
+  let columns = null;
+  for (const t of Array.isArray(json?.boxscore?.players) ? json.boxscore.players : []) {
+    const side = ids.get(str(t?.team?.id, 20));
+    const block = Array.isArray(t?.statistics) ? t.statistics[0] : null;
+    const labels = Array.isArray(block?.labels) ? block.labels.map((l) => str(l, 8).toUpperCase()) : [];
+    if (!side || !labels.includes('PTS') || !Array.isArray(block?.athletes)) continue;
+    const idx = BASKET_COLUMNS.map((c) => labels.indexOf(c)).map((i, k) => [BASKET_COLUMNS[k], i]).filter(([, i]) => i >= 0);
+    columns ||= idx.map(([c]) => c);
+    const starters = [];
+    const bench = [];
+    for (const e of block.athletes) {
+      const name = personName(e?.athlete);
+      if (!name) continue;
+      const base = { name, jersey: jerseyOf(e?.athlete?.jersey), pos: str(e?.athlete?.position?.abbreviation, 4) };
+      const vals = Array.isArray(e?.stats) ? e.stats : [];
+      const p = e?.didNotPlay === true || !vals.length
+        ? { ...base, dnp: str(e?.reason, 40) || 'Tidak bermain', s: [] }
+        : { ...base, s: idx.map(([, i]) => str(vals[i], 10) || '-') };
+      (e?.starter === true ? starters : bench).push(p);
+    }
+    if (starters.length || bench.length) out[side] = { starters: starters.slice(0, 5), bench: [...starters.slice(5), ...bench].slice(0, 16) };
+  }
+  return columns && (out.home || out.away) ? { kind: 'basketball', columns, home: out.home || { starters: [], bench: [] }, away: out.away || { starters: [], bench: [] } } : null;
+}
+
+/** Susunan pemain dari ringkasan ESPN: sepak bola (formasi, starter, cadangan, statistik pemain) atau basket (kotak skor). null bila tak ada. */
+export function parseEspnLineups(json, ids, sport = null) {
+  try {
+    if ((!sport || sport === 'football') && Array.isArray(json?.rosters) && json.rosters.length) return parseSoccerLineups(json, ids);
+    if ((!sport || sport === 'basketball') && Array.isArray(json?.boxscore?.players)) return parseBasketLineups(json, ids);
+  } catch { /* bentuk tak terduga: tanpa susunan, bukan galat */ }
+  return null;
+}
+
+/** Ringkasan laga ESPN -> { stats, events, leaders, lineups? }. */
+export function parseEspnSummary(json, sport = null) {
   const teams = Array.isArray(json?.boxscore?.teams) ? json.boxscore.teams : [];
   const ids = new Map();
   const bySide = {};
@@ -146,6 +237,7 @@ export function parseEspnSummary(json) {
     stats: bySide.home && bySide.away ? pairStats(bySide.home.statistics, bySide.away.statistics) : [],
     events: parseEspnEvents(json, ids),
     leaders: parseEspnLeaders(json, ids),
+    lineups: parseEspnLineups(json, ids, sport),
   };
 }
 
@@ -231,8 +323,9 @@ export function createStatsProvider({ fetchImpl = globalThis.fetch, timeoutMs = 
   function plan(m) {
     const id = String(m?.id || '');
     if (!['live', 'finished'].includes(m?.status)) return null;
-    if (id.startsWith('espn:') && FEED_RE.test(String(m.feed || '')) && NUM_ID_RE.test(String(m.espnId || id.slice(5)))) {
-      return { source: 'espn', calls: [[`https://site.api.espn.com/apis/site/v2/sports/${m.feed}/summary?event=${m.espnId || id.slice(5)}`, parseEspnSummary]] };
+    // Tenis: game per set sudah ada di papan skor (tanpa permintaan tambahan); ringkasan ESPN tidak punya statistik tenis.
+    if (id.startsWith('espn:') && m.sport !== 'tennis' && FEED_RE.test(String(m.feed || '')) && NUM_ID_RE.test(String(m.espnId || id.slice(5)))) {
+      return { source: 'espn', calls: [[`https://site.api.espn.com/apis/site/v2/sports/${m.feed}/summary?event=${m.espnId || id.slice(5)}`, (j) => parseEspnSummary(j, m.sport)]] };
     }
     let r = /^pub:mlb-(\d{1,10})$/.exec(id);
     if (r) return { source: 'mlb', calls: [[`https://statsapi.mlb.com/api/v1/game/${r[1]}/boxscore`, parseMlbBoxscore]] };
@@ -261,10 +354,11 @@ export function createStatsProvider({ fetchImpl = globalThis.fetch, timeoutMs = 
         log(`statistik ${m.id} gagal: ${why}`);
         return null;
       }
-      const out = { stats: [], events: [], leaders: [] };
-      for (const x of okParts) { out.stats.push(...x.stats); out.events.push(...x.events); out.leaders.push(...x.leaders); }
+      const out = { stats: [], events: [], leaders: [], lineups: null };
+      for (const x of okParts) { out.stats.push(...x.stats); out.events.push(...x.events); out.leaders.push(...x.leaders); if (x.lineups) out.lineups = x.lineups; }
       report.ok++;
-      if (!out.stats.length && !out.events.length && !out.leaders.length) per.empty++; else per.ok++;
+      if (out.lineups) report.lineups = (report.lineups || 0) + 1;
+      if (!out.stats.length && !out.events.length && !out.leaders.length && !out.lineups) per.empty++; else per.ok++;
       return out;
     },
   };

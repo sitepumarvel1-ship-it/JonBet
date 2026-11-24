@@ -95,8 +95,8 @@ export function createApp(opts = {}) {
     primary = opts.primaryProvider || (cfg.provider === 'thesportsdb'
       ? createTsdbProvider({ key: cfg.tsdbKey, now })
       : cfg.provider === 'espn'
-        ? createEspnProvider({ now, log })
-        : createCompositeProvider({ primary: createEspnProvider({ now, log }), secondary: createCompositeProvider({ primary: createPublicProvider({ now, log }), secondary: createTsdbProvider({ key: cfg.tsdbKey, now }), log }), log }));
+        ? createEspnProvider({ now, log, rugbyDiscovery: true })
+        : createCompositeProvider({ primary: createEspnProvider({ now, log, rugbyDiscovery: true }), secondary: createCompositeProvider({ primary: createPublicProvider({ now, log }), secondary: createTsdbProvider({ key: cfg.tsdbKey, now }), log }), log }));
     fallback = cfg.fallbackDemo ? demo : null;
   } else if (opts.primaryProvider) {
     primary = opts.primaryProvider;

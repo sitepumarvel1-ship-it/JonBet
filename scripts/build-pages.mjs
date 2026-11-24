@@ -153,7 +153,8 @@ export async function enrichStats(matches, { provider, cacheFile, now = () => Da
   let used = 0;
   for (const m of todo) {
     const hit = cache[m.id];
-    const fresh = hit && m.status === 'finished' && (!hit.empty || t - hit.at < 6 * HOUR);
+    // v:2 = cache sudah memuat susunan pemain; entri lama diambil ulang sekali (susunan belum ada di dalamnya)
+    const fresh = hit && hit.v === 2 && m.status === 'finished' && (!hit.empty || t - hit.at < 6 * HOUR);
     if (fresh) { rep.fromCache++; if (!hit.empty) patches.set(m.id, hit.d); continue; }
     if (used >= max) { rep.skippedByCap++; if (hit && !hit.empty) patches.set(m.id, hit.d); continue; }
     used++;
@@ -161,9 +162,9 @@ export async function enrichStats(matches, { provider, cacheFile, now = () => Da
     try { d = await provider.fetchFor(m); } catch (e) { log(`statistik ${m.id}: ${e?.message || e}`); }
     rep.fetched++;
     if (d) {
-      const has = d.stats.length || d.events.length || d.leaders.length;
+      const has = d.stats.length || d.events.length || d.leaders.length || d.lineups;
       if (has) { patches.set(m.id, d); rep.withData++; }
-      if (m.status === 'finished') cache[m.id] = { at: t, d: has ? d : null, empty: !has };
+      if (m.status === 'finished') cache[m.id] = { v: 2, at: t, d: has ? d : null, empty: !has };
     } else if (hit && !hit.empty) patches.set(m.id, hit.d); // gagal sekarang: pakai salinan lama
   }
   if (cacheFile) {
@@ -198,7 +199,7 @@ async function collect(app, t, { maxBundles, enrich = null }) {
     const src = rawById.get(m.id);
     if (!src) continue;
     const patch = extra?.patches.get(m.id);
-    files.set(f, service.bundleOf(patch ? { ...src, stats: patch.stats?.length ? patch.stats : src.stats, events: patch.events?.length ? patch.events : src.events, leaders: patch.leaders?.length ? patch.leaders : undefined } : src));
+    files.set(f, service.bundleOf(patch ? { ...src, stats: patch.stats?.length ? patch.stats : src.stats, events: patch.events?.length ? patch.events : src.events, leaders: patch.leaders?.length ? patch.leaders : undefined, lineups: patch.lineups || undefined } : src));
   }
   const matches = kept.filter((m) => files.has(matchFile(m.id)));
 
@@ -366,7 +367,7 @@ export async function buildPages({
   // ESPN tidak dibatasi seketat kunci gratis TheSportsDB: jeda pendek, coba ulang sekali, tanpa cache disk (respons besar dan cepat basi).
   const espnFetch = makeFetch({ fetchImpl, cacheFile: path.join(stateDir, 'espn-cache.json'), now, gapMs: espnGapMs ?? gapMs ?? 120, retries: 1, retryDelayMs: retryDelayMs ?? 1500, sleep, stats: espnStats, ttlRule: espnTtlRule, emptyTtl: 2 * HOUR });
   const tsdb = createTsdbProvider({ key, fetchImpl: tsdbFetch, now, perMinute: 1e9, timeoutMs: 20_000 });
-  const espn = createEspnProvider({ fetchImpl: espnFetch, now, timeoutMs: 20_000, log: (...a) => log('[espn]', ...a) });
+  const espn = createEspnProvider({ fetchImpl: espnFetch, now, timeoutMs: 20_000, rugbyDiscovery: true, log: (...a) => log('[espn]', ...a) });
   // API publik tanpa kunci (OpenLigaDB, MLB, NHL): lapisan antara ESPN dan TheSportsDB. Tanpa cache disk (responsnya kecil dan harus segar).
   const publicFetch = makeFetch({ fetchImpl, now, gapMs: espnGapMs ?? gapMs ?? 120, retries: 1, retryDelayMs: retryDelayMs ?? 1500, sleep, stats: publicStats, ttlRule: () => 0 });
   const publicApis = createPublicProvider({ fetchImpl: publicFetch, now, timeoutMs: 20_000, log: (...a) => log('[publik]', ...a) });
@@ -418,8 +419,8 @@ export async function buildPages({
     const rep = espn.report;
     const sources = {
       mode: provider,
-      ...(provider !== 'thesportsdb' ? { espn: rep ? { leagues: rep.tried, ok: rep.ok, events: rep.events, failed: rep.failed.slice(0, 20).map((f) => f.path), rangeSuspect: rep.rangeSuspect, mode: rep.mode } : null } : {}),
-      ...(snap.statsReport ? { stats: { ...snap.statsReport, requests: statsStats.network, failed: statsStats.failed, bySource: matchStats.report.bySource, errors: matchStats.report.failed.slice(0, 5) } } : {}),
+      ...(provider !== 'thesportsdb' ? { espn: rep ? { leagues: rep.tried, ok: rep.ok, events: rep.events, failed: rep.failed.slice(0, 20).map((f) => f.path), rangeSuspect: rep.rangeSuspect, mode: rep.mode, rugby: rep.rugby || null } : null } : {}),
+      ...(snap.statsReport ? { stats: { ...snap.statsReport, requests: statsStats.network, failed: statsStats.failed, bySource: matchStats.report.bySource, lineups: matchStats.report.lineups || 0, errors: matchStats.report.failed.slice(0, 5) } } : {}),
       ...(provider === 'auto' ? { public: publicApis.report ? { ...publicApis.report.sources, requests: publicStats.network, failed: publicStats.failed } : null } : {}),
       ...(provider !== 'espn' ? { thesportsdb: { requests: tsdbStats.network, cached: tsdbStats.cached, failed: tsdbStats.failed, rejected: tsdbStats.rejected || 0, ok: tsdbStats.ok } } : {}),
     };
@@ -429,6 +430,7 @@ export async function buildPages({
     const bySource = snap.matches.reduce((o, m) => { o[m.source] = (o[m.source] || 0) + 1; return o; }, {});
     log(`Data nyata: ${snap.matches.length} pertandingan (${Object.entries(bySource).map(([k, v]) => `${k} ${v}`).join(', ')}), ${snap.health.results} hasil di riwayat.`);
     if (rep) log(`ESPN: ${rep.ok} dari ${rep.tried} liga merespons${rep.failed.length ? `; gagal: ${rep.failed.slice(0, 8).map((f) => f.path).join(', ')}${rep.failed.length > 8 ? ', ...' : ''}` : ''}.`);
+    if (rep?.rugby) log(rep.rugby.ok ? `ESPN rugby: ${rep.rugby.leagues} liga ditemukan dari daftar ESPN.` : `ESPN rugby: daftar liga gagal (${rep.rugby.error}); rugby memakai sumber lain.`);
     if (rep?.mode && rep.mode !== 'range') log(`ESPN: memakai mode permintaan "${rep.mode}" (bentuk rentang tanggal ditolak ESPN).`);
     if (rep?.rangeSuspect) log(`ESPN: ${rep.rangeSuspect} liga tampaknya mengabaikan rentang tanggal (hanya satu hari yang kembali); diambil per hari.`);
     if (provider !== 'espn' && (tsdbStats.rejected || 0) > 0) log(`TheSportsDB: ${tsdbStats.rejected} dari ${tsdbStats.network} permintaan ditolak (bukan 2xx, mis. HTTP 403); ${tsdbStats.ok || 0} berhasil. Cabang di luar ESPN akan tipis atau kosong.`);

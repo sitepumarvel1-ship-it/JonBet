@@ -145,7 +145,7 @@ test('penyedia statistik: satu panggilan NHL gagal tetap memberi separuh; semua 
   const junk = createStatsProvider({ fetchImpl: async () => new Response('<html>') });
   assert.equal(await junk.fetchFor(ESPN), null);
   const empty = createStatsProvider({ fetchImpl: net({ 'summary': {} }) });
-  assert.deepEqual(await empty.fetchFor(ESPN), { stats: [], events: [], leaders: [] });
+  assert.deepEqual(await empty.fetchFor(ESPN), { stats: [], events: [], leaders: [], lineups: null });
   assert.equal(empty.report.bySource.espn.empty, 1);
 });
 
@@ -190,4 +190,97 @@ test('enrichStats: live selalu diambil; selesai disimpan dan dipakai ulang; bata
   assert.equal(again1.report.fromCache, 1);
   const again2 = await enrichStats(only, { provider: none, cacheFile: f2, now: () => T + 7 * 3_600_000 });
   assert.equal(again2.report.fetched, 1);
+});
+
+/* ------------------------------------------------------------------ susunan pemain */
+
+const ath = (name, jersey, pos, extra = {}, stats = []) => ({ athlete: { displayName: name }, jersey: String(jersey), position: { abbreviation: pos }, starter: false, stats: stats.map(([n, v]) => ({ name: n, value: v, displayValue: String(v) })), ...extra });
+const SOCCER_SUMMARY = {
+  header: { competitions: [{ competitors: [{ homeAway: 'home', team: { id: '1' } }, { homeAway: 'away', team: { id: '2' } }] }] },
+  rosters: [
+    { homeAway: 'home', team: { id: '1' }, formation: '4-3-3', roster: [
+      ath('Kiper Satu', 1, 'G', { starter: true, formationPlace: '1' }, [['saves', 4], ['goalsConceded', 1], ['appearances', 1]]),
+      ...[2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((n) => ath(`Pemain ${n}`, n, 'M', { starter: true, formationPlace: String(n) }, n === 9 ? [['totalGoals', 2], ['totalShots', 5], ['shotsOnTarget', 3], ['yellowCards', 1]] : [])),
+      ath('Cadangan Dua', 14, 'F', { subbedIn: { didSub: true } }, [['totalGoals', 1]]),
+      ath('Cadangan Tiga', 15, 'D'),
+    ] },
+    { homeAway: 'away', team: { id: '2' }, formation: { name: '4-4-2' }, roster: [ath('Tamu Satu', 1, 'G', { starter: true, formationPlace: '1', subbedOut: { didSub: true } }), ath('Tamu Cadangan', 12, 'M')] },
+  ],
+};
+
+test('susunan sepak bola: formasi, starter, cadangan, statistik pemain hanya yang bernilai, penanda pergantian', () => {
+  const l = parseEspnSummary(SOCCER_SUMMARY, 'football').lineups;
+  assert.equal(l.kind, 'soccer');
+  assert.equal(l.home.formation, '4-3-3');
+  assert.equal(l.away.formation, '4-4-2', 'formasi berbentuk objek juga dikenali');
+  assert.equal(l.home.starters.length, 11);
+  assert.deepEqual(l.home.starters[0], { name: 'Kiper Satu', jersey: '1', pos: 'G', place: 1, st: [['Penyelamatan', 4], ['Kebobolan', 1]] });
+  const striker = l.home.starters.find((p) => p.name === 'Pemain 9');
+  assert.deepEqual(striker.st, [['Gol', 2], ['Tembakan', 5], ['Tepat sasaran', 3], ['Kartu kuning', 1]]);
+  assert.deepEqual(l.home.bench.map((p) => p.name), ['Cadangan Dua', 'Cadangan Tiga']);
+  assert.equal(l.home.bench[0].in, true);
+  assert.equal(l.home.bench[1].st.length, 0);
+  assert.equal(l.away.starters[0].out, true);
+});
+
+test('susunan basket: starter, cadangan, kolom terpilih, pemain tak bermain ditandai', () => {
+  const labels = ['MIN', 'FG', '3PT', 'FT', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TO', 'PF', '+/-', 'PTS'];
+  const row = (name, starter, vals, extra = {}) => ({ starter, athlete: { displayName: name, jersey: '23', position: { abbreviation: 'G' } }, stats: vals, ...extra });
+  const json = {
+    boxscore: {
+      teams: [{ team: { id: '10' }, homeAway: 'home' }, { team: { id: '20' }, homeAway: 'away' }],
+      players: [
+        { team: { id: '10' }, statistics: [{ labels, athletes: [
+          row('Bintang', true, ['36', '9-18', '3-7', '4-4', '1', '5', '6', '8', '2', '1', '3', '2', '+11', '25']),
+          ...['A', 'B', 'C', 'D'].map((n) => row(`Starter ${n}`, true, ['30', '4-9', '1-3', '0-0', '0', '3', '3', '2', '0', '0', '1', '1', '+2', '9'])),
+          row('Bangku', false, ['12', '1-3', '0-1', '0-0', '0', '1', '1', '0', '0', '0', '0', '0', '-3', '2']),
+          row('Cedera', false, [], { didNotPlay: true, reason: 'Cedera lutut' }),
+        ] }] },
+        { team: { id: '20' }, statistics: [{ labels, athletes: [row('Lawan', true, ['40', '5-10', '0-0', '0-0', '0', '1', '1', '1', '0', '0', '0', '0', '-11', '10'])] }] },
+      ],
+    },
+  };
+  const l = parseEspnSummary(json, 'basketball').lineups;
+  assert.equal(l.kind, 'basketball');
+  assert.deepEqual(l.columns, ['MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TO', 'FG', '3PT', 'FT', 'PF', '+/-']);
+  assert.equal(l.home.starters.length, 5);
+  assert.deepEqual(l.home.starters[0].s, ['36', '25', '6', '8', '2', '1', '3', '9-18', '3-7', '4-4', '2', '+11']);
+  assert.equal(l.home.bench.length, 2);
+  assert.equal(l.home.bench[1].dnp, 'Cedera lutut');
+  assert.deepEqual(l.home.bench[1].s, []);
+  assert.equal(l.away.starters[0].name, 'Lawan');
+});
+
+test('susunan: dibatasi menurut cabang, bentuk tak terduga tidak melempar galat', () => {
+  assert.equal(parseEspnSummary(SOCCER_SUMMARY, 'rugby').lineups, null, 'cabang lain tidak ditampilkan susunannya');
+  assert.equal(parseEspnSummary(SOCCER_SUMMARY, 'basketball').lineups, null);
+  assert.equal(parseEspnSummary({ rosters: [{ homeAway: 'home', roster: 'x' }, null] }, 'football').lineups, null);
+  assert.equal(parseEspnSummary({ boxscore: { players: [{ team: { id: '1' }, statistics: [{ labels: ['G', 'A'], athletes: [] }] }] } }, 'basketball').lineups, null, 'tanpa kolom PTS: bukan kotak skor basket');
+  assert.equal(parseEspnSummary({}, 'football').lineups, null);
+});
+
+test('provider: susunan ikut terambil dari ringkasan ESPN dan dihitung di laporan', async () => {
+  const impl = async (url) => new Response(JSON.stringify(SOCCER_SUMMARY));
+  const p = createStatsProvider({ fetchImpl: impl });
+  const d = await p.fetchFor({ id: 'espn:99', sport: 'football', feed: 'soccer/eng.1', espnId: '99', status: 'finished' });
+  assert.equal(d.lineups.home.starters.length, 11);
+  assert.equal(p.report.lineups, 1);
+  assert.equal(p.report.bySource.espn.ok, 1);
+});
+
+test('cache statistik lama (tanpa susunan) diambil ulang sekali; setelah itu laga selesai dari cache', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jb-lu-'));
+  const cacheFile = path.join(dir, 'stats-cache.json');
+  const NOW = Date.parse('2026-11-24T00:00:00Z');
+  const m = { id: 'espn:5', sport: 'football', status: 'finished', kickoff: new Date(NOW - 5 * 3600_000).toISOString() };
+  fs.writeFileSync(cacheFile, JSON.stringify({ 'espn:5': { at: NOW - 3600_000, d: { stats: [{ label: 'Tembakan', home: 1, away: 2 }], events: [], leaders: [] }, empty: false } }));
+  let calls = 0;
+  const provider = { supports: () => true, fetchFor: async () => { calls++; return { stats: [{ label: 'Tembakan', home: 1, away: 2 }], events: [], leaders: [], lineups: { kind: 'soccer' } }; } };
+  const a = await enrichStats([m], { provider, cacheFile, now: () => NOW });
+  assert.equal(calls, 1, 'entri lama tanpa versi diambil ulang');
+  assert.equal(a.patches.get('espn:5').lineups.kind, 'soccer');
+  const b = await enrichStats([m], { provider, cacheFile, now: () => NOW + 60_000 });
+  assert.equal(calls, 1, 'entri berversi baru dipakai dari cache');
+  assert.equal(b.report.fromCache, 1);
+  assert.equal(b.patches.get('espn:5').lineups.kind, 'soccer');
 });

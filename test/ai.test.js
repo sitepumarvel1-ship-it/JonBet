@@ -229,7 +229,7 @@ test('AI bawaan: memahami pertanyaan wajar (kata utuh, banyak maksud, peran tim,
 });
 
 test('AI per laga: pertanyaan lanjutan memakai konteks; skenario "bagaimana jika" dihitung ulang dengan model yang sama', async () => {
-  const t = await boot();
+  const t = await boot({ start: Date.parse('2026-11-23T06:25:00Z') }); // jam tetap: jadwal demo mengikuti jam nyata, dan di jam tertentu tak ada laga sepak bola live
   try {
     const m = (await t.req('GET', '/api/matches?status=live&sport=football')).json.matches[0];
     assert.ok(m, 'perlu laga live sepak bola di data demo');

@@ -9,7 +9,8 @@ import { clock, longWhen, num1, pctInt, untilKickoff } from '../format.js';
 import { setQuery } from '../router.js';
 import { disableNotifications, enableNotifications, isFollowing, permission, setFollow, setKeepAwake, settings, supported } from '../notify.js';
 
-const TABS = [['analisis', 'Analisis'], ['form', 'Form dan H2H'], ['statistik', 'Statistik'], ['komunitas', 'Komunitas'], ['ai', 'Tanya JonBet AI']];
+const TABS = [['analisis', 'Analisis'], ['form', 'Form dan H2H'], ['susunan', 'Susunan'], ['statistik', 'Statistik'], ['komunitas', 'Komunitas'], ['ai', 'Tanya JonBet AI']];
+const tabsFor = (m) => TABS.filter(([k]) => k !== 'susunan' || (m && hasLineups(m)));
 
 const panel = (title, ...children) => h('section', { class: 'card panel' }, h('h3', {}, title), ...children);
 
@@ -182,7 +183,7 @@ function statsTab(b) {
   const when = (e) => (e.clock ? String(e.clock) : e.minute != null ? `${e.minute}'` : '');
   const left = [
     panel('Statistik pertandingan',
-      hasStats ? compareRows(m.stats) : h('p', { class: 'muted' }, m.status === 'upcoming' ? 'Statistik tersedia setelah pertandingan dimulai.' : 'Sumber data belum menyediakan statistik untuk pertandingan ini.'),
+      hasStats ? compareRows(m.stats) : h('p', { class: 'muted' }, m.status === 'upcoming' ? 'Statistik tersedia setelah pertandingan dimulai.' : m.sport === 'futsal' ? 'Belum ada sumber statistik terbuka untuk futsal. Skor datang dari TheSportsDB dan bisa terlambat.' : 'Sumber data belum menyediakan statistik untuk pertandingan ini.'),
       hasStats ? h('p', { class: 'sub' }, `Biru: ${m.home.name}. Amber: ${m.away.name}. Diperbarui tiap build situs, tidak detik demi detik.`) : null),
   ];
   if (leaders.length) {
@@ -196,6 +197,80 @@ function statsTab(b) {
     panel('Jalannya pertandingan',
       ev.length ? h('div', { class: 'timeline' }, ev.map((e) => h('div', { class: 'tl' }, h('span', { class: 'm' }, when(e)), h('span', {}, `${EVENT_LABEL[e.type]} ${side(e)}${e.player ? `: ${e.player}` : ''}`))))
         : h('p', { class: 'muted' }, m.status === 'upcoming' ? 'Belum dimulai.' : 'Belum ada kejadian tercatat.')));
+}
+
+/* ------------------------------------------------------------ susunan pemain */
+
+const LINEUP_SPORTS = new Set(['football', 'basketball']);
+const hasLineups = (m) => LINEUP_SPORTS.has(m.sport);
+const surname = (n) => { const p = String(n || '').trim().split(/\s+/); return p.length > 1 ? p.slice(1).join(' ') : p[0] || ''; };
+
+/** Bagi 11 starter ke baris menurut formasi ("4-3-3"): kiper, lalu tiap lini dari belakang ke depan. null bila datanya tak cukup. */
+export function pitchRows(formation, starters) {
+  const lines = String(formation || '').split('-').map(Number);
+  if (lines.length < 2 || lines.some((n) => !Number.isInteger(n) || n < 1) || lines.reduce((a, b) => a + b, 0) !== 10) return null;
+  if (!Array.isArray(starters) || starters.length !== 11 || starters.some((p) => !Number.isInteger(p.place))) return null;
+  if (new Set(starters.map((p) => p.place)).size !== 11) return null;
+  const sorted = [...starters].sort((a, b) => a.place - b.place);
+  const rows = [[sorted[0]]];
+  let at = 1;
+  for (const n of lines) { rows.push(sorted.slice(at, at + n)); at += n; }
+  return rows;
+}
+
+function playerStatChips(p) {
+  const chips = [];
+  if (p.in) chips.push(h('span', { class: 'pl-tag in' }, 'Masuk'));
+  if (p.out) chips.push(h('span', { class: 'pl-tag out' }, 'Diganti'));
+  for (const [label, v] of p.st || []) chips.push(h('span', { class: 'pl-stat' }, `${label} ${v}`));
+  return chips;
+}
+
+function soccerLineup(team, side) {
+  const rows = pitchRows(team.formation, team.starters);
+  const dot = (p) => h('div', { class: `pl-dot ${side === 'home' ? 'h' : 'a'}` },
+    h('span', { class: 'pl-n' }, p.jersey || '·'), h('span', { class: 'pl-name' }, surname(p.name)));
+  const list = (title, arr) => arr.length ? h('div', { class: 'pl-group' }, h('h4', {}, title),
+    arr.map((p) => h('div', { class: 'pl-row' },
+      h('span', { class: 'pl-jersey' }, p.jersey || '-'),
+      h('span', { class: 'pl-who' }, h('b', {}, p.name), p.pos ? h('small', {}, p.pos) : null),
+      h('span', { class: 'pl-stats' }, playerStatChips(p))))) : null;
+  return h('div', {},
+    team.formation ? h('p', { class: 'sub' }, `Formasi ${team.formation}`) : null,
+    rows ? h('div', { class: 'pitch', role: 'img', 'aria-label': `Formasi ${team.formation}` }, [...rows].reverse().map((r) => h('div', { class: 'pitch-row' }, r.map(dot)))) : null,
+    list('Starter', team.starters), list('Cadangan', team.bench));
+}
+
+function basketLineup(l, team, side) {
+  const cols = l.columns;
+  const head = () => h('tr', {}, h('th', { scope: 'col' }, 'Pemain'), cols.map((c) => h('th', { scope: 'col' }, c))); // node baru tiap tabel (satu node tak bisa berada di dua tempat)
+  const row = (p) => p.dnp
+    ? h('tr', { class: 'dnp' }, h('th', { scope: 'row' }, p.name, p.pos ? h('small', {}, p.pos) : null), h('td', { colspan: cols.length }, p.dnp))
+    : h('tr', {}, h('th', { scope: 'row' }, p.name, p.pos ? h('small', {}, p.pos) : null), p.s.map((v) => h('td', {}, v)));
+  const table = (title, arr) => arr.length ? h('div', { class: 'pl-group' }, h('h4', {}, title),
+    h('div', { class: 'box-wrap' }, h('table', { class: `box ${side === 'home' ? 'h' : 'a'}` }, h('thead', {}, head()), h('tbody', {}, arr.map(row))))) : null;
+  return h('div', {}, table('Starter', team.starters), table('Cadangan', team.bench));
+}
+
+function lineupTab(b) {
+  const { match: m } = b;
+  const l = m.lineups;
+  if (!l || (!l.home.starters.length && !l.home.bench.length && !l.away.starters.length && !l.away.bench.length)) {
+    return panel('Susunan pemain', h('p', { class: 'muted' },
+      m.status === 'upcoming' ? 'Susunan belum tersedia. JonBet baru mengambilnya untuk laga yang sudah live atau selesai.'
+        : 'Sumber data belum menyediakan susunan pemain untuk pertandingan ini (liga kecil sering tidak punya).'));
+  }
+  let side = 'home';
+  const body = h('div');
+  const toggle = h('div', { class: 'seg seg-fill', role: 'group', 'aria-label': 'Pilih tim' });
+  const draw = () => {
+    mount(toggle, ['home', 'away'].map((s) => h('button', { type: 'button', 'aria-pressed': String(side === s), onclick: () => { side = s; draw(); } }, m[s].name)));
+    const team = l[side];
+    mount(body, team.starters.length || team.bench.length ? (l.kind === 'basketball' ? basketLineup(l, team, side) : soccerLineup(team, side)) : h('p', { class: 'muted' }, 'Tidak ada data susunan untuk tim ini.'));
+  };
+  draw();
+  return panel('Susunan pemain', toggle, body,
+    h('p', { class: 'sub' }, 'Diperbarui tiap build situs, tidak detik demi detik: pergantian pemain di tengah laga baru tampil di build berikutnya.'));
 }
 
 /* ------------------------------------------------------------- komunitas */
@@ -420,7 +495,7 @@ export function matchView({ params, query }) {
   }
 
   function drawTabs() {
-    mount(tabsSlot, TABS.map(([k, label]) => h('button', {
+    mount(tabsSlot, tabsFor(bundle?.match).map(([k, label]) => h('button', {
       type: 'button', role: 'tab', id: `tab-${k}`, 'aria-selected': String(tab === k), 'aria-controls': 'tabpanel',
       onclick: () => goTab(k),
     }, label)));
@@ -430,6 +505,7 @@ export function matchView({ params, query }) {
     panelSlot.setAttribute('aria-labelledby', `tab-${tab}`);
     if (tab === 'analisis') mount(panelSlot, analysisTab(bundle, goTab));
     else if (tab === 'form') mount(panelSlot, formTab(bundle));
+    else if (tab === 'susunan') mount(panelSlot, lineupTab(bundle));
     else if (tab === 'statistik') mount(panelSlot, statsTab(bundle));
     else if (tab === 'komunitas') { mount(panelSlot, community.el); community.load(); }
     else { mount(panelSlot, ai.el); ai.init(); }
@@ -440,6 +516,7 @@ export function matchView({ params, query }) {
       const b = await api(`/api/matches/${encodeURIComponent(id)}/analysis`);
       const prevStatus = bundle?.match?.status;
       bundle = b;
+      if (initial && tab === 'susunan' && !hasLineups(b.match)) tab = 'analisis';
       if (initial) {
         community = communityTab(getBundle, id);
         ai = aiTab(getBundle, id);
@@ -454,7 +531,7 @@ export function matchView({ params, query }) {
       mount(heroSlot, buildHero(b));
       document.title = `${b.match.home.name} vs ${b.match.away.name} | JonBet`;
       if (initial) drawPanel();
-      else if (tab === 'analisis' || tab === 'form' || tab === 'statistik') drawPanel();
+      else if (tab === 'analisis' || tab === 'form' || tab === 'susunan' || tab === 'statistik') drawPanel();
       else if (tab === 'komunitas' && prevStatus !== b.match.status) community.redraw(); // jangan merombak formulir yang sedang diisi
     } catch (err) {
       if (!bundle) mount(root, errorBox(err, () => { mount(root, loadingBox()); load(true); }), h('a', { class: 'btn btn-sm', href: '#/matches' }, 'Kembali ke jadwal'));

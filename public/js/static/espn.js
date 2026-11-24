@@ -59,6 +59,9 @@ export const ENDPOINTS = [
   T('americanfootball', 'football/cfl', /^cfl$|^canadian football league$/),
   T('americanfootball', 'football/college-football', /^(ncaa|college|ncaaf)/),
   T('baseball', 'baseball/mlb', /^mlb$|^major league baseball$/),
+  // Tenis: papan skor ESPN berisi turnamen -> undian -> pertandingan. Pola nama dipakai hanya untuk laga dari TheSportsDB.
+  T('tennis', 'tennis/atp', /\batp\b|^(australian|french|us) open$|^wimbledon$|roland garros/),
+  T('tennis', 'tennis/wta', /\bwta\b/),
   T('icehockey', 'hockey/nhl', /^nhl$|^national hockey league$/),
 ];
 
@@ -74,7 +77,7 @@ const LABEL = {
   'soccer/uefa.europa.conf': 'UEFA Conference League', 'soccer/idn.1': 'Indonesian Super League', 'soccer/aus.1': 'Australian A-League', 'soccer/jpn.1': 'Japanese J1 League',
   'soccer/ksa.1': 'Saudi Pro League', 'basketball/nba': 'NBA', 'basketball/wnba': 'WNBA', 'basketball/womens-college-basketball': "NCAA Women's Basketball",
   'basketball/mens-college-basketball': "NCAA Men's Basketball", 'football/nfl': 'NFL', 'football/cfl': 'CFL', 'football/college-football': 'NCAA Football',
-  'baseball/mlb': 'MLB', 'hockey/nhl': 'NHL',
+  'baseball/mlb': 'MLB', 'hockey/nhl': 'NHL', 'tennis/atp': 'ATP Tour', 'tennis/wta': 'WTA Tour',
 };
 export const leagueLabel = (path) => LABEL[path] || path;
 
@@ -125,6 +128,14 @@ export function parseScoreboard(json) {
   const out = [];
   const events = Array.isArray(json?.events) ? json.events : [];
   for (const e of events) {
+    if (Array.isArray(e?.groupings)) {
+      // Tenis: events[] = turnamen, groupings[] = undian (tunggal/ganda), competitions[] = pertandingan.
+      for (const g of e.groupings) for (const c of Array.isArray(g?.competitions) ? g.competitions : []) {
+        const t = tennisEvent(e, g, c);
+        if (t) out.push(t);
+      }
+      continue;
+    }
     const comp = e?.competitions?.[0];
     const cs = comp?.competitors;
     if (!Array.isArray(cs) || cs.length !== 2) continue;
@@ -153,6 +164,77 @@ export function parseScoreboard(json) {
     });
   }
   return out;
+}
+
+/* ------------------------------------------------------------------ tenis */
+
+// Satu set selesai bila ada yang mencapai 6 game dengan selisih 2, atau 7 game (7-5 dan 7-6).
+const setDone = (h, a) => { const hi = Math.max(h, a); const lo = Math.min(h, a); return (hi >= 6 && hi - lo >= 2) || (hi === 7 && lo >= 5); };
+const TBD_RE = /\b(tbd|tba|bye|qualifier)\b/i;
+
+/** Pertandingan tenis ESPN -> peristiwa ringkas. Skor = set yang dimenangkan; game per set di `sets`. null bila tak layak. */
+function tennisEvent(e, g, comp) {
+  const cs = comp?.competitors;
+  if (!Array.isArray(cs) || cs.length !== 2 || comp.id === undefined || comp.id === null) return null;
+  const [a, b] = [...cs].sort((x, y) => (num(x?.order) || 99) - (num(y?.order) || 99));
+  const nameOf = (c) => String(c?.athlete?.displayName ?? c?.roster?.displayName ?? c?.team?.displayName ?? '').trim();
+  const na = nameOf(a);
+  const nb = nameOf(b);
+  if (!na || !nb || TBD_RE.test(na) || TBD_RE.test(nb)) return null;
+  const date = Date.parse(comp.date || comp.startDate);
+  if (!Number.isFinite(date)) return null; // tanpa jam mulai sendiri: jangan memakai tanggal turnamen
+  const status = comp.status || e.status || {};
+  const type = status.type || {};
+  const sets = [];
+  const la = Array.isArray(a.linescores) ? a.linescores : [];
+  const lb = Array.isArray(b.linescores) ? b.linescores : [];
+  for (let i = 0; i < Math.min(la.length, lb.length, 5); i++) {
+    const x = num(la[i]?.value);
+    const y = num(lb[i]?.value);
+    if (Number.isFinite(x) && Number.isFinite(y) && x >= 0 && y >= 0 && x < 100 && y < 100) sets.push([x, y]); else break;
+  }
+  let wa = 0;
+  let wb = 0;
+  for (const [x, y] of sets) if (setDone(x, y)) { if (x > y) wa++; else wb++; }
+  const state = String(type.state || '');
+  const completed = type.completed === true;
+  // Selesai tanpa pemenang set yang jelas (mundur sebelum set pertama selesai, walkover, hasil seri set): tidak dipakai sebagai hasil.
+  const usable = state !== 'post' || (wa !== wb);
+  const mk = (c, n, w) => ({ names: unique([n, c?.athlete?.shortName]), abbr: '', score: usable ? w : null });
+  return {
+    id: String(comp.id),
+    date,
+    home: mk(a, na, wa),
+    away: mk(b, nb, wb),
+    state,
+    name: String(type.name || ''),
+    completed,
+    period: sets.length || null,
+    clock: '',
+    clockSec: null,
+    detail: '',
+    venue: typeof (comp.venue?.fullName ?? e.venue?.displayName) === 'string' ? String(comp.venue?.fullName ?? e.venue?.displayName).slice(0, 80) : null,
+    sets,
+    tournament: typeof e.shortName === 'string' || typeof e.name === 'string' ? String(e.shortName || e.name).replace(/[\u0000-\u001f]/g, '').trim().slice(0, 50) : '',
+    draw: typeof g?.grouping?.displayName === 'string' ? g.grouping.displayName.slice(0, 40) : '',
+  };
+}
+
+function tennisClock(ev) {
+  const sets = Array.isArray(ev.sets) ? ev.sets : [];
+  const cur = sets[sets.length - 1];
+  const open = cur && !setDone(cur[0], cur[1]);
+  const n = open ? sets.length : sets.length + 1;
+  return { minute: null, period: open ? `Set ${n} (${cur[0]}-${cur[1]})` : `Antar set ${Math.max(1, sets.length)}`, progress: null };
+}
+
+function rugbyClock(ev) {
+  if (ev.name === 'STATUS_HALFTIME') return { minute: 40, period: 'Turun minum', progress: 0.5 };
+  const m = /^(\d+)/.exec(ev.clock.trim());
+  const minute = m ? Number(m[1]) : null;
+  const extra = /EXTRA|OVERTIME/.test(ev.name) || (minute !== null && minute > 80);
+  const period = extra ? 'Perpanjangan' : ev.period === 1 ? 'Babak 1' : ev.period === 2 ? 'Babak 2' : 'Live';
+  return { minute, period, progress: minute === null ? null : clamp(minute / 80, 0, 0.99) };
 }
 
 /* ------------------------------------------------------------------ pencocokan nama tim */
@@ -306,6 +388,8 @@ export function overlayOf(match, ev, swapped) {
   else if (match.sport === 'football') clock = soccerClock(ev);
   else if (structure(match.sport, league)) clock = periodClock(match.sport, ev, league);
   else if (match.sport === 'baseball') clock = baseballClock(ev);
+  else if (match.sport === 'tennis') { if (!Array.isArray(ev.sets)) return null; clock = tennisClock(ev); }
+  else if (match.sport === 'rugby') clock = rugbyClock(ev);
   else return null;
 
   return { status, score: { home: hs, away: as }, minute: clock.minute, period: clock.period, progress: clock.progress, espnId: ev.id };

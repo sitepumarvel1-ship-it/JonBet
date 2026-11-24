@@ -178,7 +178,7 @@ test('provider ESPN: filter cabang hanya memanggil liga cabang itu', async () =>
   assert.ok(site.log.length > 0 && site.log.every((u) => /\/basketball\//.test(u)), site.log.join('\n'));
   assert.ok(rows.length > 0 && rows.every((m) => m.sport === 'basketball'));
   const before = site.log.length;
-  assert.deepEqual(await p.listMatches({ ...WINDOW, sports: ['tennis'] }), [], 'cabang yang tak dicakup: daftar kosong tanpa galat dan tanpa permintaan');
+  assert.deepEqual(await p.listMatches({ ...WINDOW, sports: ['badminton'] }), [], 'cabang yang tak dicakup: daftar kosong tanpa galat dan tanpa permintaan');
   assert.equal(site.log.length, before);
 });
 
@@ -544,4 +544,203 @@ test('build auto: statistik lengkap masuk bundel laga; laga selesai tidak dimint
   const m3 = readJ(r3.outDir, 'data/meta.json');
   assert.equal(m3.sources.stats.withData, 0);
   assert.ok(m3.sources.stats.errors.length > 0 && /HTTP 500/.test(m3.sources.stats.errors[0].error));
+});
+
+/* ------------------------------------------------------------------ tenis dan rugby (ESPN) */
+
+import { overlayOf } from '../public/js/static/espn.js';
+
+const iso = (o) => new Date(T0 + o * HOUR).toISOString();
+const tPlayer = (order, name, sets, extra = {}) => ({ order, athlete: { displayName: name, shortName: extra.short || name }, linescores: sets.map((v) => ({ value: v })) });
+const tComp = (id, off, state, name, completed, a, b, extra = {}) => ({ id, date: iso(off), status: { type: { state, name, completed } }, competitors: [a, b], ...extra });
+const TENNIS = { leagues: [{ name: 'Association of Tennis Professionals' }], events: [{ id: '900', name: 'Rolex Paris Masters', shortName: 'Paris Masters', groupings: [
+  { grouping: { displayName: "Men's Singles" }, competitions: [
+    tComp('t1', -1, 'in', 'STATUS_IN_PROGRESS', false, tPlayer(1, 'Jannik Sinner', [6, 3], { short: 'J. Sinner' }), tPlayer(2, 'Carlos Alcaraz', [4, 2])),
+    tComp('t2', -9, 'post', 'STATUS_FINAL', true, tPlayer(1, 'Alexander Zverev', [6, 3, 7]), tPlayer(2, 'Daniil Medvedev', [4, 6, 6])),
+    tComp('t3', 6, 'pre', 'STATUS_SCHEDULED', false, tPlayer(1, 'Taylor Fritz', []), tPlayer(2, 'Casper Ruud', [])),
+    tComp('t4', 7, 'pre', 'STATUS_SCHEDULED', false, tPlayer(1, 'TBD', []), tPlayer(2, 'Casper Ruud', [])),
+    tComp('t5', -20, 'post', 'STATUS_RETIRED', true, tPlayer(1, 'Pemain Mundur', [3]), tPlayer(2, 'Pemain Lawan', [2])),
+    tComp('t6', -2, 'in', 'STATUS_IN_PROGRESS', false, tPlayer(1, 'Tanpa Jam', [1]), tPlayer(2, 'Tanpa Jam Lawan', [0]), { date: undefined }),
+  ] },
+  { grouping: { displayName: "Men's Doubles" }, competitions: [
+    tComp('d1', -3, 'post', 'STATUS_FINAL', true, { order: 1, roster: { displayName: 'Ram / Salisbury' }, linescores: [{ value: 6 }, { value: 6 }] }, { order: 2, roster: { displayName: 'Koolhof / Mektic' }, linescores: [{ value: 3 }, { value: 4 }] }),
+  ] },
+] }] };
+
+test('tenis ESPN: undian dibaca jadi pertandingan; skor = set menang; game per set; TBD, mundur, tanpa jam dibuang', () => {
+  const evs = parseScoreboard(TENNIS);
+  assert.deepEqual(evs.map((e) => e.id), ['t1', 't2', 't3', 't5', 'd1'], 't4 (TBD) dan t6 (tanpa jam) dibuang');
+  assert.deepEqual([evs.find((e) => e.id === 't5').home.score, evs.find((e) => e.id === 't5').away.score], [null, null], 'mundur tanpa set selesai: tanpa hasil yang bisa dipakai');
+  const by = Object.fromEntries(evs.map((e) => [e.id, e]));
+  assert.deepEqual([by.t1.home.score, by.t1.away.score, by.t1.sets], [1, 0, [[6, 4], [3, 2]]], 'set 2 (3-2) belum selesai');
+  assert.deepEqual([by.t2.home.score, by.t2.away.score], [2, 1], '7-6 di set penentu = selesai');
+  assert.equal(by.t3.home.score, 0);
+  assert.equal(by.t1.tournament, 'Paris Masters');
+  assert.equal(by.t1.draw, "Men's Singles");
+  assert.ok(by.t1.home.names.includes('J. Sinner'));
+  assert.equal(by.d1.home.names[0], 'Ram / Salisbury', 'ganda memakai nama pasangan');
+});
+
+test('tenis ESPN: toMatch memberi liga tur+turnamen, set demi set sebagai statistik, status benar', () => {
+  const ms = parseScoreboard(TENNIS).map((e) => toMatch(e, ep('tennis/atp'), 'Association of Tennis Professionals')).filter(Boolean);
+  const by = Object.fromEntries(ms.map((m) => [m.id, m]));
+  assert.deepEqual(Object.keys(by).sort(), ['espn:d1', 'espn:t1', 'espn:t2', 'espn:t3']);
+  assert.equal(by['espn:t1'].sport, 'tennis');
+  assert.equal(by['espn:t1'].league, 'ATP Tour: Paris Masters');
+  assert.equal(by['espn:t1'].feed, 'tennis/atp');
+  assert.deepEqual([by['espn:t1'].status, by['espn:t1'].score, by['espn:t1'].period], ['live', { home: 1, away: 0 }, 'Set 2 (3-2)']);
+  assert.deepEqual(by['espn:t1'].stats, [{ label: 'Set 1 (game)', home: 6, away: 4 }, { label: 'Set 2 (game)', home: 3, away: 2 }]);
+  assert.deepEqual([by['espn:t2'].status, by['espn:t2'].score, by['espn:t2'].period], ['finished', { home: 2, away: 1 }, 'Selesai']);
+  assert.equal(by['espn:t3'].status, 'upcoming');
+  assert.equal(by['espn:t3'].stats, null, 'laga belum mulai: tanpa statistik');
+  for (const m of ms) assert.ok(MATCH_ID_RE.test(m.id) && matchFile(m.id), `id sah: ${m.id}`);
+});
+
+test('tenis ESPN: overlay live dari browser (set dan game), peristiwa tanpa set tidak menimpa apa pun', () => {
+  const ev = parseScoreboard(TENNIS).find((e) => e.id === 't1');
+  const o = overlayOf({ sport: 'tennis', league: 'ATP Tour: Paris Masters' }, ev, false);
+  assert.deepEqual([o.status, o.score, o.period, o.minute, o.progress], ['live', { home: 1, away: 0 }, 'Set 2 (3-2)', null, null]);
+  const sw = overlayOf({ sport: 'tennis', league: 'x' }, ev, true);
+  assert.deepEqual(sw.score, { home: 0, away: 1 }, 'urutan terbalik antara snapshot dan ESPN');
+  assert.equal(overlayOf({ sport: 'tennis', league: 'x' }, { ...ev, sets: undefined }, false), null);
+  const pre = parseScoreboard(TENNIS).find((e) => e.id === 't3');
+  assert.equal(overlayOf({ sport: 'tennis', league: 'x' }, pre, false), null, 'belum mulai');
+});
+
+test('tenis ESPN: penyedia memanggil atp/wta dan memberi laga tenis; endpoint tenis ada untuk laga TheSportsDB', async () => {
+  const seenUrls = [];
+  const impl = async (url) => { seenUrls.push(String(url)); return new Response(JSON.stringify(/tennis\/atp\//.test(String(url)) ? TENNIS : { events: [] })); };
+  const p = createEspnProvider({ fetchImpl: impl, now: () => T0 });
+  const rows = await p.listMatches({ from: T0 - 6 * HOUR, to: T0 + 30 * HOUR, sports: ['tennis'] });
+  assert.ok(seenUrls.length >= 2 && seenUrls.every((u) => /\/tennis\/(atp|wta)\/scoreboard/.test(u)), seenUrls.join('\n'));
+  assert.deepEqual(rows.map((m) => m.id).sort(), ['espn:d1', 'espn:t1', 'espn:t2', 'espn:t3'].sort().filter((id) => rows.some((m) => m.id === id)));
+  assert.ok(rows.some((m) => m.id === 'espn:t1') && rows.every((m) => m.sport === 'tennis'));
+  assert.equal(endpointsFor({ sport: 'tennis', league: 'ATP Tour' })[0].path, 'tennis/atp');
+  assert.equal(endpointsFor({ sport: 'tennis', league: 'WTA Finals' })[0].path, 'tennis/wta');
+});
+
+const RUGBY_LIST = { items: [{ $ref: 'http://sports.core.api.espn.com/v2/sports/rugby/leagues/164205?lang=en&region=us' }, { $ref: 'http://sports.core.api.espn.com/v2/sports/rugby/leagues/270557' }, { $ref: 'bukan-liga' }, { id: '999' }, { $ref: 'http://x/leagues/164205' }] };
+const rugbyBoard = (id) => board(
+  espnEvent({ id: `${id}1`, date: T0 - 0.5 * HOUR, home: 'Leinster', away: 'Munster', hs: 17, as: 10, state: 'in', period: 1, clock: "33'" }),
+  espnEvent({ id: `${id}2`, date: T0 - 1.5 * HOUR, home: 'Ulster', away: 'Ospreys', hs: 21, as: 21, state: 'in', name: 'STATUS_HALFTIME', period: 1, clock: "40'" }),
+  espnEvent({ id: `${id}3`, date: T0 + 5 * HOUR, home: 'Glasgow', away: 'Cardiff', state: 'pre', name: 'STATUS_SCHEDULED' }),
+  espnEvent({ id: `${id}4`, date: T0 - 20 * HOUR, home: 'Benetton', away: 'Zebre', hs: 30, as: 12, state: 'post', name: 'STATUS_FULL_TIME', completed: true, period: 2 }),
+);
+
+test('rugby ESPN: liga ditemukan dari daftar ESPN, jam rugby (babak, 80 menit), hasil, dan laporan penemuan', async () => {
+  const seenUrls = [];
+  const impl = async (url) => {
+    const u = String(url);
+    seenUrls.push(u);
+    if (/sports\.core\.api\.espn\.com\/v2\/sports\/rugby\/leagues/.test(u)) return new Response(JSON.stringify(RUGBY_LIST));
+    const m = /\/rugby\/(\d+)\/scoreboard/.exec(u);
+    return new Response(JSON.stringify(m ? { leagues: [{ name: m[1] === '164205' ? 'United Rugby Championship' : 'Premiership Rugby' }], ...rugbyBoard(m[1]) } : { events: [] }));
+  };
+  const p = createEspnProvider({ fetchImpl: impl, now: () => T0, leagues: [], rugbyDiscovery: true });
+  const rows = await p.listMatches({ from: T0 - 24 * HOUR, to: T0 + 30 * HOUR, sports: ['rugby'] });
+  assert.deepEqual(p.report.rugby, { ok: true, leagues: 3, found: 3 }, 'tiga id unik: 164205, 270557, 999');
+  assert.ok(seenUrls.some((u) => /\/rugby\/164205\/scoreboard/.test(u)) && seenUrls.some((u) => /\/rugby\/999\/scoreboard/.test(u)));
+  assert.equal(seenUrls.filter((u) => /core\.api/.test(u)).length, 1, 'penemuan satu kali');
+  const m = rows.find((x) => x.id === 'espn:1642051');
+  assert.deepEqual([m.sport, m.feed, m.league, m.status, m.score, m.period, m.minute], ['rugby', 'rugby/164205', 'United Rugby Championship', 'live', { home: 17, away: 10 }, 'Babak 1', 33]);
+  assert.ok(Math.abs(m.progress - 33 / 80) < 1e-9);
+  const ht = rows.find((x) => x.id === 'espn:1642052');
+  assert.deepEqual([ht.period, ht.minute, ht.progress], ['Turun minum', 40, 0.5]);
+  assert.equal(rows.find((x) => x.id === 'espn:1642054').status, 'finished');
+  assert.equal(rows.find((x) => x.id === 'espn:1642053').status, 'upcoming');
+  assert.ok(MATCH_ID_RE.test(m.id) && matchFile(m.id));
+  assert.equal((await p.getMatch('espn:1642051')).id, 'espn:1642051', 'getMatch menemukan liga rugby hasil penemuan');
+  await p.listMatches({ from: T0 - 24 * HOUR, to: T0 + 30 * HOUR, sports: ['rugby'] });
+  assert.equal(seenUrls.filter((u) => /core\.api/.test(u)).length, 1, 'tidak ditanya ulang');
+});
+
+test('rugby ESPN: penemuan gagal atau mati tidak mematikan sumber lain; tanpa opsi tidak ada permintaan inti', async () => {
+  const dead = createEspnProvider({ fetchImpl: async (u) => (/core\.api/.test(String(u)) ? new Response('x', { status: 500 }) : new Response(JSON.stringify({ events: [] }))), now: () => T0, leagues: ENDPOINTS.filter((e) => e.sport === 'basketball'), rugbyDiscovery: true, log: quiet });
+  const rows = await dead.listMatches({ from: T0 - DAY, to: T0 + DAY });
+  assert.deepEqual(rows, []);
+  assert.equal(dead.report.rugby.ok, false);
+  assert.match(dead.report.rugby.error, /HTTP 500/);
+  assert.ok(dead.report.ok >= 1, 'liga lain tetap dibaca');
+  const seenUrls = [];
+  const off = createEspnProvider({ fetchImpl: async (u) => { seenUrls.push(String(u)); return new Response(JSON.stringify({ events: [] })); }, now: () => T0, leagues: ENDPOINTS.filter((e) => e.sport === 'basketball') });
+  await off.listMatches({ from: T0 - DAY, to: T0 + DAY });
+  assert.ok(!seenUrls.some((u) => /core\.api/.test(u)));
+  assert.equal(off.report.rugby, undefined);
+  const junk = createEspnProvider({ fetchImpl: async () => new Response('<html>'), now: () => T0, leagues: [], rugbyDiscovery: true, log: quiet });
+  assert.deepEqual(await junk.listMatches({ from: T0 - DAY, to: T0 + DAY, sports: ['rugby'] }), []);
+  assert.equal(junk.report.rugby.ok, false);
+});
+
+test('rugby ESPN: overlay browser memakai jam rugby (80 menit) untuk laga dari ESPN', () => {
+  const ev = parseScoreboard(rugbyBoard('55'))[0];
+  const o = overlayOf({ sport: 'rugby', league: 'URC' }, ev, false);
+  assert.deepEqual([o.status, o.score, o.period, o.minute], ['live', { home: 17, away: 10 }, 'Babak 1', 33]);
+  const fin = overlayOf({ sport: 'rugby', league: 'URC' }, parseScoreboard(rugbyBoard('55'))[3], false);
+  assert.deepEqual([fin.status, fin.period, fin.progress], ['finished', 'Selesai', 1]);
+});
+
+test('build: tenis dan rugby dari ESPN masuk snapshot dan bundel (set demi set), penemuan rugby tercatat di meta', async () => {
+  const site = fakeEspnSite({ now: T0 });
+  const impl = async (url, init) => {
+    const u = String(url);
+    if (/core\.api\.espn\.com\/v2\/sports\/rugby\/leagues/.test(u)) return new Response(JSON.stringify({ items: [{ $ref: 'http://sports.core.api.espn.com/v2/sports/rugby/leagues/270557' }] }));
+    const r = /\/rugby\/(\d+)\/scoreboard/.exec(u);
+    if (r) return new Response(JSON.stringify({ leagues: [{ name: 'United Rugby Championship' }], ...rugbyBoard(r[1]) }));
+    if (/\/tennis\/atp\/scoreboard/.test(u)) return new Response(JSON.stringify(TENNIS));
+    if (/\/summary\?event=/.test(u)) return new Response(JSON.stringify({}));
+    return site.impl(url, init);
+  };
+  const logs = [];
+  const r = await buildPages(buildOpts(tmp('tr'), tmp('trs'), { provider: 'espn', fetchImpl: impl, log: (...a) => logs.push(a.join(' ')) }));
+  assert.equal(r.outcome, 'fresh');
+  const snap = readJ(r.outDir, 'data/matches.json');
+  const ten = snap.matches.filter((m) => m.sport === 'tennis');
+  const rug = snap.matches.filter((m) => m.sport === 'rugby');
+  assert.ok(ten.some((m) => m.id === 'espn:t1' && m.league === 'ATP Tour: Paris Masters'), ten.map((m) => m.id).join());
+  assert.ok(rug.length >= 3 && rug.every((m) => m.feed === 'rugby/270557' && m.league === 'United Rugby Championship'));
+  const b = readJ(r.outDir, 'data', matchFile('espn:t1'));
+  assert.deepEqual(b.match.stats.map((s) => [s.label, s.home, s.away]), [['Set 1 (game)', 6, 4], ['Set 2 (game)', 3, 2]]);
+  assert.equal(b.match.score.home, 1);
+  const meta = readJ(r.outDir, 'data/meta.json');
+  assert.deepEqual(meta.sources.espn.rugby, { ok: true, leagues: 1, found: 1 });
+  assert.ok(logs.some((l) => /ESPN rugby: 1 liga ditemukan/.test(l)), logs.filter((l) => /rugby/i.test(l)).join('\n'));
+});
+
+test('build: susunan pemain (sepak bola dan basket) masuk bundel laga, tidak masuk daftar laga, dan tercatat di meta', async () => {
+  const summaryFor = (feed, id) => {
+    const base = { header: { competitions: [{ competitors: [{ homeAway: 'home', team: { id: `h${id}` } }, { homeAway: 'away', team: { id: `a${id}` } }] }] }, boxscore: { teams: [{ team: { id: `h${id}` }, homeAway: 'home', statistics: [] }, { team: { id: `a${id}` }, homeAway: 'away', statistics: [] }] } };
+    if (feed.startsWith('soccer/')) {
+      const side = (ha, f) => ({ homeAway: ha, team: { id: `${ha[0]}${id}` }, formation: f, roster: [...Array.from({ length: 11 }, (_, i) => ({ starter: true, formationPlace: String(i + 1), jersey: String(i + 1), athlete: { displayName: `Pemain ${ha} ${i + 1}` }, position: { abbreviation: 'M' }, stats: [] })), { starter: false, jersey: '20', athlete: { displayName: `Cadangan ${ha}` }, stats: [] }] });
+      return { ...base, rosters: [side('home', '4-4-2'), side('away', '3-5-2')] };
+    }
+    if (feed === 'basketball/nba') {
+      const labels = ['MIN', 'PTS', 'REB', 'AST'];
+      const pl = (ha) => ({ team: { id: `${ha[0]}${id}` }, statistics: [{ labels, athletes: [{ starter: true, athlete: { displayName: `Bintang ${ha}`, jersey: '1' }, stats: ['30', '20', '5', '5'] }] }] });
+      return { ...base, boxscore: { ...base.boxscore, players: [pl('home'), pl('away')] } };
+    }
+    return base;
+  };
+  const wrap = (inner) => async (url, init) => {
+    const m = /\/sports\/([a-z]+\/[a-z0-9.]+)\/summary\?event=([0-9]+)$/.exec(String(url));
+    return m ? new Response(JSON.stringify(summaryFor(m[1], m[2]))) : inner(url, init);
+  };
+  const espn = fakeEspnSite({ now: T0 });
+  const pub = async () => new Response('[]');
+  const r = await buildPages(buildOpts(tmp('lu'), tmp('lus'), { fetchImpl: wrap(routeFetch3(espn, pub, fakeTsdb({ now: T0 }))), statsMax: 60 }));
+  assert.equal(r.outcome, 'fresh');
+  const snap = readJ(r.outDir, 'data/matches.json');
+  assert.ok(!snap.matches.some((m) => m.lineups), 'daftar laga tetap ringan');
+  const bundles = snap.matches.filter((m) => m.id.startsWith('espn:') && ['live', 'finished'].includes(m.status)).map((m) => ({ m, b: readJ(r.outDir, 'data', matchFile(m.id)) }));
+  const soccer = bundles.find((x) => x.m.sport === 'football' && x.b.match.lineups);
+  const basket = bundles.find((x) => x.m.sport === 'basketball' && x.b.match.lineups);
+  assert.ok(soccer, 'ada laga sepak bola dengan susunan');
+  assert.equal(soccer.b.match.lineups.kind, 'soccer');
+  assert.equal(soccer.b.match.lineups.home.formation, '4-4-2');
+  assert.equal(soccer.b.match.lineups.away.starters.length, 11);
+  assert.ok(basket, 'ada laga basket dengan susunan');
+  assert.deepEqual(basket.b.match.lineups.columns, ['MIN', 'PTS', 'REB', 'AST']);
+  assert.deepEqual(basket.b.match.lineups.home.starters[0].s, ['30', '20', '5', '5']);
+  assert.ok(bundles.filter((x) => !['football', 'basketball'].includes(x.m.sport)).every((x) => !x.b.match.lineups), 'cabang lain tanpa susunan');
+  const meta = readJ(r.outDir, 'data/meta.json');
+  assert.ok(meta.sources.stats.lineups >= 2, `meta.sources.stats.lineups=${meta.sources.stats.lineups}`);
 });

@@ -35,9 +35,9 @@ Tidak ada data fiktif kecuali bila kamu sengaja memilih `demo`, atau bila build 
 
 | Sumber | Dipakai untuk | Catatan |
 |---|---|---|
-| **ESPN** (papan skor publik, tidak resmi) | Sepak bola di liga-liga besar dunia, basket (NBA, WNBA, NCAA), football Amerika (NFL, NCAA, CFL), baseball (MLB), hoki es (NHL): jadwal, hasil, status live | Satu permintaan per liga per build mengambil seluruh rentang tanggal, jadi datanya lengkap. Tersedia tanpa kunci |
-| **API publik tanpa kunci** (OpenLigaDB, MLB Stats API, NHL) | Bundesliga 1-3 dan DFB-Pokal (OpenLigaDB), baseball MLB, hoki es NHL | Lapisan pelengkap dan cadangan: menambah laga yang tidak ada di ESPN dan menggantikan ESPN bila ESPN gagal untuk liga itu. Tanpa kunci. Tiap sumber berdiri sendiri: satu mati tidak menggagalkan yang lain, dan statusnya tercatat di `meta.json` (`sources.public`). Sebagian besar liga ini juga ada di ESPN, jadi manfaat utamanya ketahanan, bukan banyak laga baru |
-| **TheSportsDB** | Cabang yang tidak dicakup ESPN (tenis, bulu tangkis, voli, esports, MMA, rugby, futsal) dan liga sepak bola yang tidak ada di ESPN | Hasil kontribusi komunitas. Kunci gratis dibatasi: menurut dokumentasi pihak ketiga hanya sekitar 5 laga per hari per liga, jadi datanya tipis. Kunci premium membukanya penuh |
+| **ESPN** (papan skor publik, tidak resmi) | Sepak bola di liga-liga besar dunia, basket (NBA, WNBA, NCAA), football Amerika (NFL, NCAA, CFL), baseball (MLB), hoki es (NHL), tenis (ATP dan WTA, set demi set) dan rugby (liga ditemukan otomatis): jadwal, hasil, status live | Satu permintaan per liga per build mengambil seluruh rentang tanggal, jadi datanya lengkap. Tersedia tanpa kunci |
+| **API publik tanpa kunci** (OpenLigaDB, MLB Stats API, NHL) | Bundesliga 1-3 dan DFB-Pokal (OpenLigaDB), baseball bertingkat lewat MLB Stats API (MLB, MiLB Triple-A sampai Rookie, liga musim dingin, kampus, NPB, KBO, internasional), hoki es NHL | Lapisan pelengkap dan cadangan: menambah laga yang tidak ada di ESPN dan menggantikan ESPN bila ESPN gagal untuk liga itu. Tanpa kunci. Tiap sumber berdiri sendiri: satu mati tidak menggagalkan yang lain, dan statusnya tercatat di `meta.json` (`sources.public`). Sebagian besar liga ini juga ada di ESPN, jadi manfaat utamanya ketahanan, bukan banyak laga baru |
+| **TheSportsDB** | Cabang yang tidak dicakup ESPN (bulu tangkis, voli, esports, MMA, futsal, serta tenis dan rugby di luar ESPN) dan liga sepak bola yang tidak ada di ESPN | Hasil kontribusi komunitas. Kunci gratis dibatasi: menurut dokumentasi pihak ketiga hanya sekitar 5 laga per hari per liga, jadi datanya tipis. Kunci premium membukanya penuh |
 
 Laga yang sama dari beberapa sumber hanya tampil sekali (versi sumber berprioritas lebih tinggi dipakai). Bila satu sumber gagal, yang lain tetap dipakai; bila semuanya gagal, situs memakai data terakhir yang berhasil ("Data tertunda").
 
@@ -189,10 +189,35 @@ Cara kerjanya: tiap build mengambil statistik laga yang live (selalu diambil ula
 Yang perlu kamu tahu:
 
 - **Tidak detik demi detik.** Statistik hanya segar sesering build (±5–10 menit); skor dan menit tetap live dari browser, statistiknya tidak.
-- **Cakupan tidak merata.** Liga kecil sering tidak punya statistik di ESPN; tabnya menampilkan "Sumber data belum menyediakan statistik" bukan angka karangan. Tenis, bulu tangkis, voli, esports, MMA, rugby, dan futsal (dari TheSportsDB) tidak punya statistik per laga di sini.
+- **Cakupan tidak merata.** Liga kecil sering tidak punya statistik di ESPN; tabnya menampilkan "Sumber data belum menyediakan statistik" bukan angka karangan. Bulu tangkis, voli, esports, MMA, dan futsal (dari TheSportsDB) tidak punya statistik per laga di sini; tenis hanya game per set. Statistik rugby tergantung ESPN: bila tidak ada, tab berkata begitu.
 - **Belum diuji ke layanan asli.** Bentuk respons ESPN, MLB, dan NHL ditulis dari pengetahuan publik dan diuji dengan respons tiruan. Pembacanya toleran (field yang tak dikenal dilewati), tetapi bila `sources.stats.withData` bernilai 0 padahal `candidates` banyak, kirim isi `errors` dari `meta.json`.
 - **Mengapa bukan Google atau LiveScore.** Google tidak punya API statistik pertandingan: panel skor di pencarian adalah data berlisensi, dan mengambilnya dengan scraping melanggar ketentuan layanan serta diblokir dari GitHub Actions dan browser (CORS). LiveScore juga tidak punya API publik; satu-satunya jalan yang ada adalah scraper pihak ketiga, yang berarti mengambil data tanpa izin. Statistik yang lebih kaya untuk sepak bola (susunan pemain, xG) bisa didapat dari penyedia berlisensi seperti API-Football lewat proxy Cloudflare yang sudah ada, dengan kunci milikmu sendiri.
 - Versi server (`npm start`) belum memuat statistik ini; hanya build GitHub Pages.
+
+### Susunan pemain (sepak bola dan basket)
+
+Tab **Susunan** di halaman laga sepak bola dan basket (dari ESPN) menampilkan:
+
+- **Sepak bola**: formasi (mis. 4-3-3) digambar di lapangan, daftar starter dan cadangan dengan nomor punggung dan posisi, statistik individu yang bernilai (gol, assist, tembakan, tembakan tepat sasaran, penyelamatan kiper, pelanggaran, kartu), dan penanda pemain yang masuk atau diganti.
+- **Basket**: tabel kotak skor per tim, starter dan cadangan, dengan menit, poin, rebound, assist, steal, blok, turnover, FG, 3PT, FT, foul, dan plus-minus. Pemain yang tidak bermain ditandai beserta alasannya.
+
+Datanya satu paket dengan statistik laga: diambil dari ringkasan ESPN yang sama (tanpa permintaan tambahan), jadi batasnya sama: hanya laga yang sudah live atau selesai, maksimal 60 permintaan per build, dan hanya sesegar build. Jumlah laga yang berhasil dapat susunan tercatat di `meta.json` (`sources.stats.lineups`).
+
+Yang perlu kamu tahu:
+
+- **Belum diuji ke ESPN sungguhan.** Nama field (`rosters`, `formation`, `formationPlace`, `boxscore.players`) saya tulis dari pengetahuan tentang bentuk ESPN dan diuji dengan respons tiruan. Bila `sources.stats.lineups` bernilai 0 padahal statistik laga terisi, kirim satu contoh balasan `summary?event=...` dari liga itu supaya saya mencocokkan bacaannya.
+- **Letak pemain di lapangan** dihitung dari urutan nomor posisi ESPN (`formationPlace`) dan formasinya: kiper, lalu tiap lini dari belakang ke depan. Itu konvensi yang saya andalkan, belum terbukti di data asli. Bila data tidak lengkap atau tidak cocok dengan formasi, lapangan tidak digambar dan daftar pemain tetap tampil.
+- **Susunan sebelum laga tidak ditampilkan.** ESPN kadang merilisnya sekitar satu jam sebelum kick-off, tetapi build hanya mengambil laga live dan selesai. Menit pergantian pemain juga belum ditampilkan, hanya penanda masuk atau diganti.
+- **Tidak detik demi detik.** Susunan dan statistik pemain baru berubah di build berikutnya. Liga kecil sering tidak punya data ini di ESPN; tabnya berkata begitu.
+- **Cabang lain** (football Amerika, hoki, rugby, dan lainnya) belum punya tab ini.
+- Laga selesai yang statistiknya sudah tersimpan di cache build lama diambil ulang satu kali agar susunannya ikut terisi (dibatasi 60 per build, jadi bisa butuh beberapa build).
+
+### Tenis, rugby, baseball, dan futsal
+
+- **Tenis** (ATP dan WTA dari ESPN): skor laga = jumlah set yang dimenangkan; tab Statistik menampilkan game per set. Saat live, browser membaca set dan game berjalan langsung dari ESPN. Bentuk data turnamen ESPN (turnamen > babak > pertandingan) ditulis dari dokumentasi pihak ketiga dan **belum diuji ke ESPN sungguhan**. Pemain yang belum ditentukan (TBD, bye, kualifikasi) dilewati.
+- **Rugby**: ESPN punya banyak liga rugby dengan nomor yang tidak saya hafal dengan pasti, jadi build **menemukannya sendiri** lewat daftar liga rugby ESPN (maksimal 60 liga, sekali per build). Hasilnya tercatat di `meta.json` (`sources.espn.rugby`: `ok`, `leagues`, `found`) dan di log ("ESPN rugby: N liga ditemukan"). Bila daftar itu gagal diambil, rugby jatuh ke TheSportsDB dan alasannya tertulis di `sources.espn.rugby.error`. Menit pertandingan (babak 1/2, jeda, perpanjangan) dibaca dari jam ESPN saat live.
+- **Baseball**: MLB Stats API kini menanyakan satu permintaan per tingkat (MLB, MiLB, NPB, KBO, dll.), dan tiap tingkat berdiri sendiri di `sources.public`. Hanya MLB yang di-poll live dari browser (lewat ESPN); tingkat lain **diperbarui tiap build**, bukan detik demi detik, karena akses browser langsung ke MLB Stats API belum terbukti diizinkan (CORS).
+- **Futsal**: tidak ada sumber gratis. Datanya hanya dari TheSportsDB saat build (terbatas di kunci gratis), tanpa statistik per laga, dan tab Statistik berkata terus terang soal itu. Skor live futsal baru mungkin lewat kunci TheSportsDB premium yang dipasang di proxy Cloudflare (lihat bagian proxy). Saya tidak menemukan API futsal terbuka yang layak, dan tidak mau memalsukan datanya.
 
 ## Tanya AI, ikuti laga, dan notifikasi
 

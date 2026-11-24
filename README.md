@@ -17,7 +17,7 @@ Butuh Node.js 22.13 atau lebih baru. Tanpa dependensi npm.
 npm run preview:pages  # versi GitHub Pages, data simulasi: http://localhost:8080/jonbet/
 npm run demo           # versi server, data simulasi: http://localhost:3000
 npm start              # versi server, data nyata dari ESPN + TheSportsDB (lihat "Sumber data")
-npm test               # 208 tes: backend, model, keamanan, build Pages, sumber data ESPN dan API publik, statistik laga, skor langsung, proxy skor, asisten AI, fuzz
+npm test               # 225 tes: backend, model, keamanan, build Pages, sumber data ESPN dan API publik, statistik laga, skor langsung, proxy skor, asisten AI, fuzz
 npm run check          # periksa sintaks semua berkas JS
 npm run test:ui        # uji browser versi server; butuh Google Chrome dan: npm i --no-save playwright-core
 npm run test:ui:static # uji browser versi GitHub Pages di subfolder /jonbet/
@@ -44,6 +44,7 @@ PWA hanya bisa dipasang lewat **HTTPS** (kecuali `localhost`). Setelah diterbitk
 - Semua alamat relatif, sehingga jalan di subfolder (`github.io/nama-repo/`).
 - Bila pengambilan data gagal, situs memakai data terakhir yang berhasil dan menandainya "Data tertunda"; bila belum pernah berhasil, data simulasi berlabel jelas.
 - Statistik lengkap per laga (`server/providers/matchstats.js`): perbandingan tim, pemain kunci, gol dan kartu dari ringkasan ESPN, boxscore MLB, NHL, dan OpenLigaDB, diambil saat build dan disimpan di berkas data tiap laga (maks. 60 permintaan per build, laga selesai di-cache). Belum diuji ke layanan asli; tidak real-time. Penjelasan dan batasannya di [docs/DEPLOY.md](docs/DEPLOY.md).
+- Susunan pemain untuk sepak bola dan basket (tab Susunan): formasi di lapangan, starter, cadangan, statistik individu (sepak bola); kotak skor starter dan cadangan (basket). Dari ringkasan ESPN yang sama, per build. Belum diuji ke ESPN asli.
 - Tanya AI (`server/ai/assistant.js`, tab "Tanya AI"): pertanyaan lintas laga (live, hasil, jadwal, laga ketat, pilihan model, tim) dengan konteks percakapan dan skenario "bagaimana jika" di halaman laga. Mesin aturan dan statistik, bukan model bahasa; berjalan di browser pada mode Pages.
 - Ikuti laga dan notifikasi (`public/js/notify.js`): notifikasi lokal untuk kick-off, gol, dan akhir laga, serta polling tab tersembunyi, **hanya selama aplikasi atau tab masih hidup**. Bukan push: tanpa server, notifikasi tidak bisa menjangkau aplikasi yang tertutup. Batasnya dijelaskan di [docs/DEPLOY.md](docs/DEPLOY.md).
 - Komunitas lokal: tanpa server dan tanpa kata sandi. Aturan poin sama dengan versi server (diuji dengan 600 kasus acak yang dibandingkan langsung dengan kode server).

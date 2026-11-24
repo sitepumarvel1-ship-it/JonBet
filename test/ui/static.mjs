@@ -71,10 +71,37 @@ const AUTO_SUMMARY = {
     { type: { text: 'Yellow Card' }, team: { id: '2' }, clock: { displayValue: "30'" }, participants: [{ athlete: { displayName: 'Pemain Uji Dua' } }] },
   ],
   leaders: [{ team: { id: '1' }, leaders: [{ displayName: 'Goals', leaders: [{ displayValue: '1', athlete: { displayName: 'Pemain Uji Satu' } }] }] }],
+  rosters: [
+    { homeAway: 'home', team: { id: '1' }, formation: '4-3-3', roster: [
+      ...Array.from({ length: 11 }, (_, i) => ({ starter: true, formationPlace: String(i + 1), jersey: String(i + 1), athlete: { displayName: i === 0 ? 'Kiper Uji' : i === 9 ? 'Pemain Uji Satu' : `Pemain Home ${i + 1}` }, position: { abbreviation: i === 0 ? 'G' : 'M' },
+        stats: i === 9 ? [{ name: 'totalGoals', value: 1 }, { name: 'totalShots', value: 4 }] : i === 0 ? [{ name: 'saves', value: 3 }] : [] })),
+      { starter: false, jersey: '14', athlete: { displayName: 'Cadangan Uji' }, position: { abbreviation: 'F' }, subbedIn: { didSub: true }, stats: [] },
+    ] },
+    { homeAway: 'away', team: { id: '2' }, formation: '4-4-2', roster: [{ starter: true, formationPlace: '1', jersey: '1', athlete: { displayName: 'Kiper Tamu' }, position: { abbreviation: 'G' }, stats: [] }] },
+  ],
+};
+const BASKET_ID = 'espn:777002';
+const BK_LABELS = ['MIN', 'FG', '3PT', 'FT', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TO', 'PF', '+/-', 'PTS'];
+const bkRow = (name, starter, pts, extra = {}) => ({ starter, athlete: { displayName: name, jersey: '7', position: { abbreviation: 'G' } }, stats: ['30', '8-16', '2-6', '3-4', '1', '4', '5', '6', '1', '0', '2', '2', '+5', String(pts)], ...extra });
+const BASKET_SUMMARY = {
+  header: { competitions: [{ competitors: [{ homeAway: 'home', team: { id: '10' } }, { homeAway: 'away', team: { id: '20' } }] }] },
+  boxscore: {
+    teams: [{ team: { id: '10' }, homeAway: 'home', statistics: [] }, { team: { id: '20' }, homeAway: 'away', statistics: [] }],
+    players: [
+      { team: { id: '10' }, statistics: [{ labels: BK_LABELS, athletes: [bkRow('Bintang Kandang', true, 31), ...[1, 2, 3, 4].map((n) => bkRow(`Starter Kandang ${n}`, true, 8)), bkRow('Bangku Kandang', false, 4), bkRow('Pemain Cedera', false, 0, { didNotPlay: true, reason: 'Cedera' })] }] },
+      { team: { id: '20' }, statistics: [{ labels: BK_LABELS, athletes: [bkRow('Bintang Tamu', true, 22)] }] },
+    ],
+  },
 };
 const autoEspn = async (url, init) => {
   if (/\/soccer\/eng\.1\/summary\?event=777001$/.test(String(url))) return new Response(JSON.stringify(AUTO_SUMMARY), { status: 200 });
+  if (/\/basketball\/nba\/summary\?event=777002$/.test(String(url))) return new Response(JSON.stringify(BASKET_SUMMARY), { status: 200 });
   const res = await espnSite.impl(url, init);
+  if (/\/basketball\/nba\/scoreboard/.test(String(url))) {
+    const j = await res.json();
+    j.events.push(espnEvent({ id: '777002', date: NOW - 50 * 60_000, home: 'Los Angeles Lakers', away: 'Boston Celtics', hs: 40, as: 38, state: 'in', period: 2, clock: '5:00' }));
+    return new Response(JSON.stringify(j), { status: 200 });
+  }
   if (!/\/soccer\/eng\.1\/scoreboard/.test(String(url))) return res;
   const j = await res.json();
   j.events.push(autoLiveEv(0, 0, "35'"));
@@ -597,8 +624,8 @@ const waitChip = async (page, re, timeout = 9000) => {
 // Gangguan ESPN yang disengaja menimbulkan galat jaringan bawaan peramban; yang lain (CSP, galat skrip, aset gagal) tetap dihitung.
 // Baris konsol "Failed to load resource" tidak memuat alamat, tetapi kembarannya ([requestfailed]/[http NNN]) memuat dan tetap diperiksa.
 const relevant = (issues) => issues.filter((i) => !/favicon/.test(i) && !/^\[console\.error\] Failed to load resource/.test(i) && (!/espn/.test(i) || /Content Security Policy|Refused/i.test(i)));
-async function openLive(hash = '/matches', site = siteLive, setup = null) {
-  const ctx = await newCtx('desktop-1440'); const page = await ctx.newPage(); const issues = watch(page);
+async function openLive(hash = '/matches', site = siteLive, setup = null, profile = 'desktop-1440') {
+  const ctx = await newCtx(profile); const page = await ctx.newPage(); const issues = watch(page);
   resetEspn();
   await page.route(ESPN_GLOB, espnHandler);
   if (setup) await setup(page);
@@ -838,6 +865,72 @@ await test('statistik lengkap: tab Statistik menampilkan perbandingan, pemain ku
   noIssues(relevant(issues), 'statistik-lengkap');
   await ctx.close();
 });
+
+await test('susunan pemain: tab Susunan menampilkan formasi di lapangan, starter, cadangan, statistik pemain, dan pindah tim', async () => {
+  const { ctx, page, issues } = await openLive(hrefOf(AUTO_ID).slice(1), siteAuto);
+  await page.waitForSelector('.hero');
+  await page.click('[role=tab]:has-text("Susunan")');
+  await until(page, () => !!document.querySelector('.pitch'));
+  assert((await page.$$eval('.pitch .pl-dot', (e) => e.length)) === 11, 'sebelas pemain di lapangan');
+  assert((await page.$$eval('.pitch .pitch-row', (e) => e.map((r) => r.children.length))).join() === '3,3,4,1', 'baris dari depan ke belakang: 3-3-4-1 (formasi 4-3-3 + kiper)');
+  const text = await page.evaluate(() => document.querySelector('main').innerText);
+  assert(/Formasi 4-3-3/.test(text) && /Starter/.test(text) && /Cadangan/.test(text), 'judul bagian');
+  assert(/Pemain Uji Satu/.test(text) && /Gol 1/.test(text) && /Tembakan 4/.test(text), 'statistik pemain');
+  assert(/Penyelamatan 3/.test(text) && /Masuk/.test(text), 'kiper dan penanda pergantian');
+  assert(/tidak detik demi detik/.test(text), 'kejujuran soal kesegaran');
+  if (process.env.JB_SHOT) await page.screenshot({ path: `${process.env.JB_SHOT}/susunan-bola.png`, fullPage: true });
+  await page.click('.seg button:has-text("Arsenal")');
+  await until(page, () => /Formasi 4-4-2/.test(document.querySelector('main').innerText));
+  assert(/Kiper Tamu/.test(await page.evaluate(() => document.querySelector('main').innerText)), 'tim tamu');
+  assert((await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)), 'tanpa overflow');
+  noIssues(relevant(issues), 'susunan');
+  await ctx.close();
+});
+
+await test('susunan basket: tab Susunan menampilkan tabel kotak skor starter dan cadangan, pemain tak bermain ditandai', async () => {
+  const { ctx, page, issues } = await openLive(hrefOf(BASKET_ID).slice(1), siteAuto);
+  await page.waitForSelector('.hero');
+  await page.click('[role=tab]:has-text("Susunan")');
+  await until(page, () => !!document.querySelector('table.box'));
+  const heads = await page.$$eval('table.box', (ts) => ts.map((t) => [...t.querySelectorAll('thead th')].slice(0, 4).map((x) => x.textContent).join()));
+  assert(heads.length === 2 && heads.every((x) => x === 'Pemain,MIN,PTS,REB'), `kolom tiap tabel (starter dan cadangan): ${heads.join(' | ')}`);
+  const text = await page.evaluate(() => document.querySelector('main').innerText);
+  assert(/Bintang Kandang/.test(text) && /Bangku Kandang/.test(text) && /8-16/.test(text), 'pemain dan angka');
+  assert(/Pemain Cedera/.test(text) && /Cedera/.test(text), 'pemain tak bermain ditandai');
+  assert((await page.$$eval('table.box tbody tr', (r) => r.length)) === 7, 'lima starter + dua cadangan');
+  assert(!(await page.$('.pitch')), 'basket tanpa lapangan formasi');
+  if (process.env.JB_SHOT) await page.screenshot({ path: `${process.env.JB_SHOT}/susunan-basket.png`, fullPage: true });
+  assert((await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)), 'tabel melebar di dalam pembungkusnya, bukan di halaman');
+  await page.click('.seg button:has-text("Celtics")');
+  await until(page, () => /Bintang Tamu/.test(document.querySelector('main').innerText));
+  noIssues(relevant(issues), 'susunan-basket');
+  await ctx.close();
+});
+
+for (const pname of ['ponsel-kecil-320', 'ponsel-390']) {
+  await test(`susunan ${pname}: lapangan dan tabel muat di layar (tabel menggulir di dalam pembungkusnya), tanpa overflow halaman`, async () => {
+    for (const id of [AUTO_ID, BASKET_ID]) {
+      const { ctx, page, issues } = await openLive(hrefOf(id).slice(1), siteAuto, null, pname);
+      await page.waitForSelector('.hero');
+      await page.click('[role=tab]:has-text("Susunan")');
+      await until(page, () => !!document.querySelector('.pitch, table.box'));
+      const wide = await page.evaluate(() => { const vw = document.documentElement.clientWidth; return document.documentElement.scrollWidth <= vw ? [] : [...document.querySelectorAll('body *')].filter((e) => e.getBoundingClientRect().right > vw + 1).slice(0, 4).map((e) => `${e.tagName}.${e.className}`); });
+      assert(!wide.length, `${id}: halaman melebar di ${pname}: ${wide.join(' ')} | ${await page.evaluate(() => ['.page', 'main', '.panel', '.box-wrap', 'table.box', '#tabpanel', '.hero'].map((q) => { const e = document.querySelector(q); return e ? `${q}=${Math.round(e.getBoundingClientRect().width)}` : `${q}=-`; }).join(' '))} vw=${await page.evaluate(() => document.documentElement.clientWidth)}`);
+      if (id === AUTO_ID) {
+        const boxes = await page.$$eval('.pitch .pl-dot', (els) => els.map((e) => { const r = e.getBoundingClientRect(); return [r.left, r.right, r.top, r.bottom]; }));
+        const vw = page.viewportSize().width;
+        assert(boxes.every(([l, r]) => l >= 0 && r <= vw), `pemain di dalam layar ${vw}px: ${JSON.stringify(boxes.filter(([l, r]) => l < 0 || r > vw))}`);
+        for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) {
+          const [a, b] = [boxes[i], boxes[j]];
+          assert(!(a[0] < b[1] - 1 && b[0] < a[1] - 1 && a[2] < b[3] - 1 && b[2] < a[3] - 1), `pemain ${i} dan ${j} bertumpuk di ${pname}`);
+        }
+      }
+      if (process.env.JB_SHOT) await page.screenshot({ path: `${process.env.JB_SHOT}/susunan-${id.slice(5)}-${pname}.png`, fullPage: true });
+      noIssues(relevant(issues), `susunan-${pname}`);
+      await ctx.close();
+    }
+  });
+}
 
 await test('data ESPN: liga dan tim sungguhan, tanpa penanda simulasi; skor live naik lewat id ESPN walau nama tim berbeda', async () => {
   const { ctx, page, issues } = await openLive('/matches', siteAuto);

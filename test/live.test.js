@@ -366,3 +366,42 @@ test('pemantau: basket NBA end-to-end dan penjadwal berhenti', async () => {
   t.feed.start();
   t.feed.stop();
 });
+
+/* ------------------------------------------------------------------ tenis dan rugby di browser */
+
+const ATP = `${ESPN_ORIGIN}/apis/site/v2/sports/tennis/atp/scoreboard`;
+const tennisBoard = (setsA, setsB, state = 'in', name = 'STATUS_IN_PROGRESS', completed = false) => ({ events: [{ id: '9', shortName: 'Paris Masters', groupings: [{ grouping: { displayName: "Men's Singles" }, competitions: [{
+  id: 't77', date: new Date(T0 - 30 * MIN).toISOString(), status: { type: { state, name, completed } },
+  competitors: [{ order: 1, athlete: { displayName: 'Jannik Sinner' }, linescores: setsA.map((value) => ({ value })) }, { order: 2, athlete: { displayName: 'Carlos Alcaraz' }, linescores: setsB.map((value) => ({ value })) }],
+}] }] }] });
+
+test('pemantau: tenis dari ESPN (id pasti dari data build): set, game, dan selesai tanpa menebak nama', async () => {
+  const m = mk({ id: 'espn:t77', espnId: 't77', feed: 'tennis/atp', sport: 'tennis', league: 'ATP Tour: Paris Masters', home: { name: 'Jannik Sinner' }, away: { name: 'Carlos Alcaraz' } });
+  const t = setup({ matches: [m], routes: { [ATP]: tennisBoard([6, 2], [4, 1]) } });
+  await t.feed.tick();
+  let a = t.feed.applyList(t.snap).matches[0];
+  assert.deepEqual([a.status, a.score, a.period, a.liveSrc.name], ['live', { home: 1, away: 0 }, 'Set 2 (2-1)', 'ESPN']);
+  assert.ok(Math.abs(a.forecast.home + a.forecast.draw + a.forecast.away - 1) < 1e-6, 'peluang dihitung ulang untuk tenis');
+  t.clock.t += 20_000;
+  t.fetchImpl.routes[ATP] = tennisBoard([6, 6, 0], [4, 7, 0]);
+  await t.feed.tick();
+  a = t.feed.applyList(t.snap).matches[0];
+  assert.deepEqual([a.score, a.period], [{ home: 1, away: 1 }, 'Set 3 (0-0)']);
+  t.clock.t += 20_000;
+  t.fetchImpl.routes[ATP] = tennisBoard([6, 6, 6], [4, 7, 3], 'post', 'STATUS_FINAL', true);
+  await t.feed.tick();
+  a = t.feed.applyList(t.snap).matches[0];
+  assert.deepEqual([a.status, a.score, a.period], ['finished', { home: 2, away: 1 }, 'Selesai']);
+  assert.equal(t.fetchImpl.calls.every((c) => c.url === ATP), true, 'hanya jalur tenis/atp yang ditanya');
+});
+
+test('pemantau: rugby dari ESPN (liga bernomor) memakai jam 80 menit', async () => {
+  const URC = `${ESPN_ORIGIN}/apis/site/v2/sports/rugby/270557/scoreboard`;
+  const m = mk({ id: 'espn:r5', espnId: 'r5', feed: 'rugby/270557', sport: 'rugby', league: 'United Rugby Championship', home: { name: 'Leinster' }, away: { name: 'Munster' } });
+  const ev = (hs, as, clock) => espnEvent({ id: 'r5', date: Date.parse(m.kickoff), home: 'Leinster', away: 'Munster', hs, as, clock, period: 2 });
+  const t = setup({ matches: [m], routes: { [URC]: board(ev(14, 7, "52'")) } });
+  await t.feed.tick();
+  const a = t.feed.applyList(t.snap).matches[0];
+  assert.deepEqual([a.status, a.score, a.minute, a.period], ['live', { home: 14, away: 7 }, 52, 'Babak 2']);
+  assert.ok(Math.abs(a.progress - 52 / 80) < 1e-9);
+});

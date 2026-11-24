@@ -5,7 +5,8 @@
 //  - Satu permintaan rentang tanggal per liga (?dates=YYYYMMDD-YYYYMMDD) sudah memuat seluruh jadwal dan hasil di rentang itu.
 //  - Hanya liga di tabel ENDPOINTS (public/js/static/espn.js) yang dicoba. Slug yang tidak ada hanya mencatat satu liga gagal;
 //    sisanya tetap diproses. Ringkasan per liga tersedia di `provider.report` dan dicatat oleh skrip build.
-//  - Cabang yang tidak dicakup (tenis, MMA, rugby, esports, bulu tangkis, voli, futsal) dilayani sumber lain.
+//  - Tenis (ATP, WTA) dan rugby (liga bernomor, ditemukan lewat daftar liga ESPN bila rugbyDiscovery aktif) kini ikut dicakup.
+//  - Cabang yang tidak dicakup (MMA, esports, bulu tangkis, voli, futsal) dilayani sumber lain.
 
 import { SPORTS_BY_ID } from '../sports.js';
 import { ENDPOINTS, ESPN_ORIGIN, leagueLabel, leagueNameOf, overlayOf, parseScoreboard, scoreboardUrl } from '../../public/js/static/espn.js';
@@ -48,7 +49,8 @@ export function toMatch(ev, ep, leagueName) {
   const status = statusOf(ev);
   if (!status) return null;
 
-  const league = leagueName || leagueLabel(ep.path);
+  // Tenis: nama liga = tur + turnamen ("ATP Tour: Paris Masters"); respons ESPN untuk tur terlalu umum.
+  const league = ep.sport === 'tennis' ? `${leagueLabel(ep.path)}${ev.tournament ? `: ${ev.tournament}` : ''}`.slice(0, 80) : (leagueName || leagueLabel(ep.path));
   const m = {
     id: `espn:${ev.id}`,
     sport: ep.sport,
@@ -87,10 +89,18 @@ export function toMatch(ev, ep, leagueName) {
     }
     if (status === 'finished' && !m.score) return null; // hasil tanpa skor tidak bisa dipakai
   }
+  // Tenis: game per set langsung dari papan skor (ESPN tidak memberi statistik tenis lain di sini).
+  if (ep.sport === 'tennis' && Array.isArray(ev.sets) && ev.sets.length && status !== 'upcoming') {
+    m.stats = ev.sets.map(([x, y], i) => ({ label: `Set ${i + 1} (game)`, home: x, away: y }));
+  }
   return m;
 }
 
-export function createEspnProvider({ fetchImpl = globalThis.fetch, now = () => Date.now(), leagues = ENDPOINTS, timeoutMs = 15_000, concurrency = 4, log = () => {} } = {}) {
+// Daftar liga rugby ESPN memakai id numerik (bukan slug nama). Ditemukan dari endpoint inti ESPN; dicoba hanya bila diminta.
+const RUGBY_LIST_URL = 'https://sports.core.api.espn.com/v2/sports/rugby/leagues?limit=100';
+const RUGBY_MAX = 60;
+
+export function createEspnProvider({ fetchImpl = globalThis.fetch, now = () => Date.now(), leagues = ENDPOINTS, timeoutMs = 15_000, concurrency = 4, log = () => {}, rugbyDiscovery = false } = {}) {
   const seen = new Map(); // id -> pertandingan terakhir yang dilihat
   let report = null;
 
@@ -162,6 +172,36 @@ export function createEspnProvider({ fetchImpl = globalThis.fetch, now = () => D
     return out;
   }
 
+  // Penemuan liga rugby: satu permintaan, hasil dipakai ulang selama proses hidup. Gagal = rugby dilayani sumber lain; tercatat di report.rugby.
+  let rugbyEps = null;
+  let rugbyInfo = null;
+  async function discoverRugby() {
+    if (rugbyEps) return rugbyEps;
+    try {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), timeoutMs);
+      let json;
+      try {
+        const res = await fetchImpl(RUGBY_LIST_URL, { signal: ctl.signal, headers: { accept: 'application/json', 'user-agent': USER_AGENT } });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        json = await res.json();
+      } finally { clearTimeout(timer); }
+      const ids = [];
+      for (const it of Array.isArray(json?.items) ? json.items : []) {
+        const m = /\/leagues\/(\d{1,8})(?:\D|$)/.exec(String(it?.$ref ?? it?.id ?? ''));
+        const id = m ? m[1] : /^\d{1,8}$/.test(String(it?.id ?? '')) ? String(it.id) : null;
+        if (id && !ids.includes(id)) ids.push(id);
+      }
+      rugbyEps = ids.slice(0, RUGBY_MAX).map((id) => ({ sport: 'rugby', path: `rugby/${id}` }));
+      rugbyInfo = { ok: true, leagues: rugbyEps.length, found: ids.length };
+    } catch (err) {
+      rugbyEps = [];
+      rugbyInfo = { ok: false, error: String(err?.message || err).slice(0, 100) };
+      log(`ESPN: daftar liga rugby gagal diambil (${rugbyInfo.error}); rugby memakai sumber lain.`);
+    }
+    return rugbyEps;
+  }
+
   return {
     name: 'espn',
     isDemo: false,
@@ -170,8 +210,12 @@ export function createEspnProvider({ fetchImpl = globalThis.fetch, now = () => D
     get report() { return report; },
 
     async listMatches({ from, to, sports = null }) {
-      const wanted = leagues.filter((ep) => !sports || sports.includes(ep.sport));
-      if (!wanted.length) return []; // cabang yang tidak dicakup ESPN (tenis, MMA, ...): bukan galat, sumber lain yang melayani
+      const base = rugbyDiscovery && (!sports || sports.includes('rugby')) ? [...leagues, ...(await discoverRugby())] : leagues;
+      const wanted = base.filter((ep) => !sports || sports.includes(ep.sport));
+      if (!wanted.length) {
+        if (rugbyInfo) report = { at: new Date(now()).toISOString(), tried: 0, ok: 0, failed: [], events: 0, aborted: false, rangeSuspect: 0, mode: MODES[mode], rugby: rugbyInfo };
+        return [];
+      } // cabang yang tidak dicakup ESPN (tenis, MMA, ...): bukan galat, sumber lain yang melayani
       const start = from - DAY; // selisih zona waktu: ESPN memotong hari menurut waktu setempatnya
       const end = to + DAY;
       const suspectBefore = rangeSuspect;
@@ -200,7 +244,7 @@ export function createEspnProvider({ fetchImpl = globalThis.fetch, now = () => D
       }));
 
       const inWindow = [...found.values()].filter((m) => { const k = Date.parse(m.kickoff); return k >= from && k <= to; });
-      report = { at: new Date(now()).toISOString(), tried: wanted.length - queue.length, ok, failed, events: inWindow.length, aborted, rangeSuspect: rangeSuspect - suspectBefore, mode: MODES[mode] };
+      report = { at: new Date(now()).toISOString(), tried: wanted.length - queue.length, ok, failed, events: inWindow.length, aborted, rangeSuspect: rangeSuspect - suspectBefore, mode: MODES[mode], ...(rugbyInfo ? { rugby: rugbyInfo } : {}) };
       if (failed.length) log(`ESPN: ${failed.length} liga gagal (${failed.slice(0, 6).map((f) => `${f.path} ${f.error}`).join('; ')}${failed.length > 6 ? '; ...' : ''})`);
       if (ok === 0) throw new Error(`ESPN tidak merespons (${failed.length} liga gagal): ${failed[0]?.error || 'tanpa liga'}`);
       for (const m of found.values()) seen.set(m.id, m);
@@ -212,7 +256,7 @@ export function createEspnProvider({ fetchImpl = globalThis.fetch, now = () => D
       if (!ID_RE.test(raw)) return null;
       const known = seen.get(`espn:${raw}`);
       if (!known) return null; // jalur liga tidak diketahui tanpa pernah melihat laganya
-      const ep = leagues.find((e) => e.path === known.feed);
+      const ep = [...leagues, ...(rugbyEps || [])].find((e) => e.path === known.feed);
       if (!ep) return known;
       try {
         const k = Date.parse(known.kickoff);

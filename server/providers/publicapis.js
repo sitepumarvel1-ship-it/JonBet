@@ -1,4 +1,5 @@
-// Sumber data tambahan dari API publik tanpa kunci: OpenLigaDB (Bundesliga 1-3 dan DFB-Pokal), MLB Stats API (baseball), NHL (hoki es).
+// Sumber data tambahan dari API publik tanpa kunci: OpenLigaDB (Bundesliga 1-3 dan DFB-Pokal), MLB Stats API (baseball: MLB, liga minor,
+// liga musim dingin, kampus, NPB, KBO, internasional), NHL (hoki es).
 // Dipakai sebagai lapisan antara ESPN (utama) dan TheSportsDB: laga yang sama dengan ESPN dibuang (versi ESPN dipakai), laga yang tidak
 // ada di ESPN ditambahkan, dan bila ESPN mati sumber-sumber ini menjadi cadangan untuk liga yang mereka cakup.
 //
@@ -113,7 +114,14 @@ export function parseOpenLiga(rows, leagueName, leagueId, nowMs) {
 const MLB_URL = 'https://statsapi.mlb.com/api/v1/schedule';
 const HALF = { Top: 'Atas', Bottom: 'Bawah', Middle: 'Tengah', End: 'Akhir' };
 
-export function parseMlb(json) {
+/** Tingkat baseball di MLB Stats API (sportId). Tiap tingkat satu permintaan, dan satu yang gagal tidak menggagalkan yang lain. */
+export const MLB_LEVELS = [
+  [1, 'mlb', 'MLB'], [11, 'milb-aaa', 'MiLB Triple-A'], [12, 'milb-aa', 'MiLB Double-A'], [13, 'milb-higha', 'MiLB High-A'], [14, 'milb-a', 'MiLB Single-A'],
+  [16, 'milb-rookie', 'MiLB Rookie'], [17, 'winter', 'Liga musim dingin'], [22, 'college', 'Baseball kampus (NCAA)'], [31, 'npb', 'NPB (Jepang)'],
+  [32, 'kbo', 'KBO (Korea)'], [51, 'intl', 'Baseball internasional'],
+];
+
+export function parseMlb(json, league = 'MLB', leagueId = 'mlb') {
   const out = [];
   for (const d of Array.isArray(json?.dates) ? json.dates : []) {
     for (const g of Array.isArray(d?.games) ? d.games : []) {
@@ -142,7 +150,7 @@ export function parseMlb(json) {
         if (status === 'finished') continue;
         extra = { period: 'Live', progress: null }; // skor belum terbaca: tampilkan status saja
       }
-      const m = base({ id: `pub:mlb-${g.gamePk}`, sport: 'baseball', league: 'MLB', leagueId: 'mlb', home: { name: home }, away: { name: away }, kickoff: kick, status, venue: g.venue?.name });
+      const m = base({ id: `pub:mlb-${g.gamePk}`, sport: 'baseball', league, leagueId, home: { name: home }, away: { name: away }, kickoff: kick, status, venue: g.venue?.name });
       out.push(finish(m, hs !== null && as !== null ? { home: hs, away: as } : null, extra));
     }
   }
@@ -226,10 +234,10 @@ export function createPublicProvider({ fetchImpl = globalThis.fetch, now = () =>
         return rows;
       },
     },
-    {
-      key: 'mlb', sport: 'baseball',
-      run: async (from, to) => parseMlb(await getJson(`${MLB_URL}?sportId=1&startDate=${ymd(from)}&endDate=${ymd(to)}&hydrate=linescore`)),
-    },
+    ...MLB_LEVELS.map(([sportId, key, label]) => ({
+      key, sport: 'baseball',
+      run: async (from, to) => parseMlb(await getJson(`${MLB_URL}?sportId=${sportId}&startDate=${ymd(from)}&endDate=${ymd(to)}&hydrate=linescore`), label, key),
+    })),
     {
       key: 'nhl', sport: 'icehockey',
       async run(from, to) {

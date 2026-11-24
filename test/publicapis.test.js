@@ -1,7 +1,7 @@
 // Tes sumber data publik tanpa kunci (OpenLigaDB, MLB, NHL) dengan respons buatan; tanpa jaringan.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPublicProvider, parseMlb, parseNhl, parseOpenLiga } from '../server/providers/publicapis.js';
+import { createPublicProvider, MLB_LEVELS, parseMlb, parseNhl, parseOpenLiga } from '../server/providers/publicapis.js';
 import { createCompositeProvider } from '../server/providers/composite.js';
 import { SPORTS_BY_ID } from '../server/sports.js';
 
@@ -176,4 +176,33 @@ test('komposit tiga lapis: ESPN > publik > TheSportsDB; duplikat dibuang menurut
   assert.equal((await all.getMatch('tsdb:8')).from, 'tsdb');
   assert.equal((await all.getMatch('pub:ol-2')).home.name, 'RB Leipzig');
   assert.ok(all.report.espn.ok);
+});
+
+test('baseball bertingkat: tiap tingkat (MLB, MiLB, NPB, KBO, dst.) satu permintaan, liga diberi label tingkatnya, satu gagal tak mengganggu yang lain', async () => {
+  const game = (pk, away, home) => ({ gamePk: pk, gameDate: iso(4), status: { abstractGameState: 'Preview', detailedState: 'Scheduled' }, teams: { away: { team: { name: away } }, home: { team: { name: home } } } });
+  const asked = [];
+  const impl = async (url) => {
+    const u = String(url);
+    asked.push(u);
+    const id = Number(/sportId=(\d+)/.exec(u)?.[1]);
+    if (id === 32) return new Response('x', { status: 503 });
+    return new Response(JSON.stringify({ dates: [{ games: [game(1000 + id, `Tamu ${id}`, `Tuan ${id}`)] }] }));
+  };
+  const p = createPublicProvider({ fetchImpl: impl, now: () => NOW });
+  const rows = await p.listMatches({ ...WINDOW, sports: ['baseball'] });
+  assert.deepEqual([...new Set(asked.map((u) => Number(/sportId=(\d+)/.exec(u)[1])))].sort((a, b) => a - b), MLB_LEVELS.map(([id]) => id).sort((a, b) => a - b));
+  assert.equal(asked.length, MLB_LEVELS.length, 'satu permintaan per tingkat');
+  assert.ok(asked.every((u) => /^https:\/\/statsapi\.mlb\.com\/api\/v1\/schedule\?sportId=\d+&startDate=\d{4}-\d{2}-\d{2}&endDate=\d{4}-\d{2}-\d{2}&hydrate=linescore$/.test(u)));
+  const by = Object.fromEntries(rows.map((m) => [m.id, m]));
+  assert.equal(by['pub:mlb-1001'].league, 'MLB');
+  assert.equal(by['pub:mlb-1011'].league, 'MiLB Triple-A');
+  assert.equal(by['pub:mlb-1031'].league, 'NPB (Jepang)');
+  assert.equal(by['pub:mlb-1051'].league, 'Baseball internasional');
+  assert.ok(!by['pub:mlb-1032'], 'KBO gagal: tidak ada laganya');
+  assert.equal(rows.length, MLB_LEVELS.length - 1);
+  assert.deepEqual(p.report.sources.kbo.ok, false);
+  assert.match(p.report.sources.kbo.error, /HTTP 503/);
+  assert.equal(p.report.sources.npb.ok, true);
+  assert.equal(p.report.sources.npb.events, 1);
+  assert.ok(rows.every((m) => m.sport === 'baseball' && /^pub:mlb-\d+$/.test(m.id)));
 });
